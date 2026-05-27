@@ -1,0 +1,8 @@
+name=StellaPD
+author=Ported from StellaDS / Stella Team
+description=Atari 2600 VCS emulator for Playdate (MVP)
+bundleID=com.stellapd.emulator
+version=0.0.1
+buildNumber=1
+imagePath=
+launchSoundPath=

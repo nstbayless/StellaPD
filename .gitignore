@@ -1,0 +1,8 @@
+build/
+StellaPD.pdx/
+Source/pdex.bin
+Source/pdex.elf
+Source/pdex.so
+Source/pdex.dylib
+Source/rom.a26
+Source/rom.bin
