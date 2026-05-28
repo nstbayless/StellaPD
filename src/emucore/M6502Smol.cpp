@@ -195,6 +195,7 @@ void M6502Low::execute_smol(void)
     int executionStatus = 0;
     stack_executionStatus = &executionStatus;
 
+    int guard = 0;
     while (!executionStatus) {
         // mem()/FETCH8 already advance gSystemCycles once per memory access, so
         // mid-instruction TIA strobes (e.g. STA RESP0) land on the correct
@@ -210,8 +211,11 @@ void M6502Low::execute_smol(void)
         uInt32 used = gSystemCycles - before;        // all bus cycles this instruction
         int total = (int)smol_base_cyc[op] + (int)extras;
         if (total > (int)used) gSystemCycles += (total - (int)used);
-        // (No per-iter safety guard: a TIA WSYNC/VSYNC poke is the only way the
-        // CPU loop ever exits, and that mechanism has been correct for years.)
+        // Runaway-frame safety: cap at 2^21 (~2M) instructions per emu frame.
+        // A power of two compiles to a single-instruction Thumb-2 modified-
+        // immediate `cmp` on M7 (vs the multi-instruction load+cmp the old
+        // 2,000,000 threshold needed). Same protection, ~1 fewer cycle/insn.
+        if (unlikely(++guard == (1 << 21))) break;
     }
 
     // Write 6502 state back to Stella globals. Leave gPC unmasked to match the
