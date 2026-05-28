@@ -111,7 +111,7 @@ include $(SDK)/C_API/buildsupport/common.mk
 
 # Build the C glue at -Os too (common.mk defaults to -O2). The hot code is the
 # C++ emucore (already -Os); this is just for I-cache-friendly consistency.
-OPT = -Os -falign-functions=16 -fomit-frame-pointer
+OPT = -Os -falign-functions=32 -fomit-frame-pointer
 
 # Custom linker script pins our hot emulator functions to 32-byte cache-line-
 # aligned slots at the start of .text. See link_map.ld.
@@ -122,7 +122,7 @@ override LDSCRIPT = ./link_map.ld
 
 CXX_NATIVE = g++
 
-CXXOPT   = -Os -falign-functions=16 -fomit-frame-pointer
+CXXOPT   = -Os -falign-functions=32 -fomit-frame-pointer
 CXXBASE  = -mthumb -mcpu=$(MCU) $(FPU) $(CXXOPT) \
 	   -gdwarf-2 -Wall -Wno-unused -Wno-unknown-pragmas -fverbose-asm \
 	   -mword-relocations -fno-common -ffunction-sections -fdata-sections \
