@@ -410,6 +410,7 @@ int eventHandler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg)
         stella_alloc_buffers();
         if (!load_rom(pd)) return 0;
         pd->display->setRefreshRate(30);   // half-rate to match TIA workload
+        pd->system->setAutoLockDisabled(1); // keep the device awake during dev/testing
         pd->system->addMenuItem("Reset",  on_menu_reset,  NULL);
         pd->system->addMenuItem("Select", on_menu_select, NULL);
         static const char* ctrl_opts[] = { "Joystick", "Paddle" };
