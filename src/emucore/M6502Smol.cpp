@@ -133,8 +133,10 @@ static unsigned cpu_step_smolnes(void) { smol_read_pc(); return 2; }
 // base table, plus conditional taken-branch / read-page-cross penalties the
 // core exports below. SMOL_CYCLE_EXACT enables those exports in the .inc.
 #define SMOL_CYCLE_EXACT
-static int smol_taken;   // taken-branch penalty (0/1/2), set by the core
-static int smol_rcross;  // indexed-read page-cross penalty (0/1), set by the core
+// Per-instruction extras (taken-branch + page-cross penalty) now flow back as
+// the cpu_step_custom() return value -- the wrapper folds them into the cycle
+// accounting. The old smol_taken/smol_rcross globals were a write+read per
+// instruction; an in-register return is free.
 
 // BCD conversion tables matching Stella's M6502::ourBCDTable exactly, so the
 // SMOLNES_BCD ADC/SBC produce identical flags/results to the Stella core.
@@ -201,14 +203,13 @@ void M6502Low::execute_smol(void)
         // taken-branch, indexed-read page-cross) are added here from the
         // standard 6502 base table so total per-instruction timing matches
         // Stella -- otherwise cumulative drift smears positioned sprites.
-        smol_taken = 0; smol_rcross = 0;
         uInt32 before = gSystemCycles;
-        cpu_step_custom();                           // fetches opcode + operands, executes
+        unsigned extras = cpu_step_custom();         // fetches opcode + operands, executes
         // Pulled from inside cpu_step_custom -- avoids the duplicate
         // PageAccess lookup smol_peek_nocycle used to perform.
         uint8_t op = s_last_opcode;
         uInt32 used = gSystemCycles - before;        // all bus cycles this instruction
-        int total = (int)smol_base_cyc[op] + smol_taken + smol_rcross;
+        int total = (int)smol_base_cyc[op] + (int)extras;
         if (total > (int)used) gSystemCycles += (total - (int)used);
         if (unlikely(++guard > 2000000)) break;      // safety against a runaway frame
     }
@@ -238,15 +239,15 @@ extern "C" int smol_predict(const uint8_t pre[7], uint8_t post[7], unsigned* out
     s_Pun.byte = pre[6];
     s_nmi_irq = 0;
 
-    uint8_t op = smol_peek_nocycle((uint16_t)(((uint16_t)s_PCH << 8) | s_PCL));
-    s_predict = 1; s_predict_io = 0; smol_taken = 0; smol_rcross = 0;
-    cpu_step_custom();
+    s_predict = 1; s_predict_io = 0;
+    unsigned extras = cpu_step_custom();
+    uint8_t op = s_last_opcode;
     s_predict = 0;
 
     post[0] = s_PCL; post[1] = s_PCH;
     post[2] = s_A; post[3] = s_X; post[4] = s_Y; post[5] = s_S;
     post[6] = s_Pun.byte;
-    *out_cyc = (unsigned)smol_base_cyc[op] + smol_taken + smol_rcross;
+    *out_cyc = (unsigned)smol_base_cyc[op] + extras;
     return s_predict_io;
 }
 #endif // STELLA_DUAL_CPU

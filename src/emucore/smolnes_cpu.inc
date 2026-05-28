@@ -232,7 +232,14 @@ static inline void cpu_set_nz(uint8_t v) {
 }
 
 __attribute__((section(".text.stellapd_hot.cpu_step_custom")))
+// Per-instruction extras (taken-branch / page-cross penalty). Local to cpu_step
+// (returned to the wrapper) so gcc can register-allocate it -- the old globals
+// smol_taken / smol_rcross cost a write per instruction.
+#define smol_taken  extras
+#define smol_rcross extras
+
 static unsigned cpu_step_custom(void) {
+    unsigned extras = 0;
     unsigned cyc = 0;
 
     // ----- NMI/IRQ -----------------------------------------------------------
@@ -578,5 +585,11 @@ static unsigned cpu_step_custom(void) {
         }
     }
 
-    return cyc;
+    (void)cyc;   // vestigial; gcc DCEs all 10+ cyc updates since the result
+                 // is unused. The wrapper measures elapsed cycles via
+                 // gSystemCycles, not via this return.
+    return extras;   // taken-branch + page-cross extras (was smol_taken/rcross
+                     // globals -- now register-allocated through the macros).
 }
+#undef smol_taken
+#undef smol_rcross
