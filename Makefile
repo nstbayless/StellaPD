@@ -56,7 +56,7 @@ UINCDIR = src src/emucore
 # safely usable below the live stack frame -- do not exceed it. Only small hot
 # state can live here; our cart buffer (16-20KB) is far too big, so it stays in
 # static RAM. The DTCM pool is currently dormant (see main.c).
-UDEFS = -DSTELLA_PLAYDATE=1 -DDTCM_ALLOC -DPLAYDATE_STACK_SIZE=0x2700 \
+UDEFS = $(UDEFS_EXTRA) -DSTELLA_PLAYDATE=1 -DDTCM_ALLOC -DPLAYDATE_STACK_SIZE=0x2700 \
 	-Wno-parentheses -Wno-misleading-indentation -Wno-unused-value \
 	-Wno-unknown-warning-option -Wno-switch -Wno-unused-but-set-variable \
 	-Wno-deprecated-declarations -Wno-unused-variable -Wno-unused-function \

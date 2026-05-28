@@ -106,10 +106,19 @@ static unsigned g_marked_rows = 0;  // diagnostic: dirty rows over the log windo
 
 void stella_emit_scanline(const uint8_t* line, int row)
 {
+#ifdef PROF_SKIP_EMIT
+    (void)line; (void)row;
+    return;   // bisection: skip dither+row-mark entirely
+#endif
     if (!s_emit || row < 0 || row >= s_numLines) return;
     int destRow = s_yOff + row;
     uint8_t* o = s_fb + destRow * LCD_ROWSIZE + DEST_BYTE_X;
+#ifdef PROF_SKIP_DITHER
+    (void)o; (void)line;
+    int changed = 0;   // bisection: skip dither work; still mark for blit
+#else
     int changed = dither_row_to(o, line, row);
+#endif
     if (s_full || changed) {
         if (s_run_start < 0) s_run_start = destRow;
         g_marked_rows++;   // diagnostic: count rows actually transferred

@@ -1294,6 +1294,10 @@ void TIA::handleObjectsNoCollisions(Int32 clocksToUpdate, Int32 hpos)
 __attribute__((section(".text.stellapd_hot.tia_updateFrame")))
 ITCM_CODE void TIA::updateFrame(Int32 clock)
 {
+#ifdef PROF_SKIP_TIA_RENDER
+  (void)clock;
+  return;   // bisection: TIA renders no pixels (CPU + poke logic still run)
+#endif
   // -------------------------------------------------------------------------------------
   // Games like Elevator Agent are highly demanding and require us to skip frames
   // to even have a chance of keeping up... Check that here and render 2 frames,
@@ -1366,6 +1370,11 @@ ITCM_CODE void TIA::updateFrame(Int32 clock)
 
     if (clocksToUpdate)
     {
+#ifdef PROF_SKIP_PIXELS
+      myFramePointer += clocksToUpdate;
+    }
+    if (0) {
+#endif
         // If we are updating, make sure the Enabled Objects register is up to date...
         if(myPF != 0)
           myEnabledObjects |= myPFBit;
@@ -1393,6 +1402,14 @@ ITCM_CODE void TIA::updateFrame(Int32 clock)
         }
         else  // All other possibilities... this is expensive CPU-wise
         {
+#ifdef PROF_SKIP_HANDLE_OBJECTS
+            // bisection: pretend background-only -- fill solid bg color, skip
+            // per-pixel sprite rasterisation
+            memset(myFramePointer, myColor[MYCOLUBK], clocksToUpdate);
+            myFramePointer += clocksToUpdate;
+        }
+        if (0) {
+#endif
             Int32 hpos = clocksFromStartOfScanLine - HBLANK;
             if (bNoCollisionDetection)  // If we are Optimizing the ARM Thumb with NO collisions...
             {
@@ -1424,6 +1441,10 @@ ITCM_CODE void TIA::updateFrame(Int32 clock)
         }
     }
 
+#ifdef PROF_SKIP_FRAME_TAIL
+    // bisection: skip ALL the per-iteration housekeeping after pixel work
+    continue;
+#endif
     // Handle HMOVE blanks if they are enabled
     if(myHMOVEBlankEnabled)
     {
@@ -1945,6 +1966,10 @@ static const uInt8 ourPokeElideEligible[64] = {
 __attribute__((section(".text.stellapd_hot.tia_poke")))
 void TIA::poke(uInt16 addr, uInt8 value)
 {
+#ifdef PROF_SKIP_TIA_POKE
+  (void)addr; (void)value;
+  return;   // bisection: TIA writes are nops (game logic will be broken but CPU runs)
+#endif
   Int32 clock;
   Int32 delta_clock;
   addr = addr & 0x003f;
