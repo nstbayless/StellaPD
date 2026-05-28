@@ -6,3 +6,7 @@ Source/pdex.so
 Source/pdex.dylib
 Source/rom.a26
 Source/rom.bin
+300.pbm
+300.pgm
+*.pbm
+*.pgm

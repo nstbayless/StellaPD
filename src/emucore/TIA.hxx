@@ -266,6 +266,11 @@ class TIA : public Device
     // Indicates if the dump is current enabled for the paddles
     uInt8 myDumpEnabled;
 
+    // Shadow of the last value pokes to each TIA register (addr & 0x3f).
+    // Used by poke() to elide redundant writes to pure-state registers,
+    // avoiding an updateFrame() catch-up when no visible state changes.
+    uInt8 myLastPokeValue[64];
+
   private:
     // Ball mask table (entries are true or false)
     static uInt8 ourBallMaskTable[4][4][320];

@@ -436,6 +436,15 @@ void TIA::reset()
   // Currently no objects are enabled
   myEnabledObjects = 0;
 
+  // Shadow of last poke values for redundant-write elision (see poke()).
+  // Initialized to 0 to match reset()'s zeroing of every TIA register's
+  // class-side state below (myNUSIZ0/1, myColor[], myCTRLPF, myREFP*, PF*,
+  // myGRP*, ENAM*, HMP*/M*/BL, VDEL*, RESMP*) and TIASound's AUDC/F/V[] = 0
+  // init. So a game's first write of value 0 to any pure-state register is
+  // a true no-op and may be safely elided; any nonzero first write goes
+  // through normally.
+  for (int i = 0; i < 64; ++i) myLastPokeValue[i] = 0;
+
   // Some default values for the registers
   myVSYNC = 0;
   myVBLANK = 0;
@@ -1896,12 +1905,62 @@ void HackGIJoe(Int32 clock)
 #ifndef TIA_HMOVE_DEBUG
 ITCM_CODE
 #endif
+// Per-register elision eligibility. 1 = a poke whose value matches the last
+// value written to the same register can be skipped entirely (including the
+// expensive updateFrame() catch-up). 0 = always run.
+//
+// Eliding is sound only when:
+//  (a) the in-handler state update is purely a function of `value` (idempotent
+//      for value matches), and
+//  (b) the updateFrame() catch-up end-clock (clock + ourPokeDelayTable[addr])
+//      is monotonic across consecutive same-register pokes -- otherwise
+//      skipping one poke would let a later one render fewer clocks of pixels
+//      than the unelided pair would have. The constant-delay registers
+//      (delay 0 or 1) satisfy (b); PF0/PF1/PF2 don't (delay_tab varies 2..5
+//      with hpos, so a later poke at a lower delay can roll the end-clock
+//      backwards).
+// Excluded: VSYNC/VBLANK (frame-end side effects); WSYNC/RSYNC/RESPx/RESMx/
+// RESBL/HMOVE/HMCLR/CXCLR (triggers); GRP0/GRP1 (each snapshots the OTHER's
+// delay register on every write); HMP1/HMM0/HMM1 (HackGIJoe + Cosmic Ark /
+// Stay Frosty clock-dependent bugs); NUSIZ0/NUSIZ1 (recompute Pn/Mn masks
+// against the CURRENT myPOSPn/myPOSMn, which a RESPx between writes shifts);
+// CTRLPF (its myCurrentPFMask update fires every poke against current hpos);
+// PF0/PF1/PF2 (variable per-hpos delay -- breaks the monotonic-end-clock
+// requirement above).
+static const uInt8 ourPokeElideEligible[64] = {
+  /* 00 VSYNC  */ 0, /* 01 VBLANK */ 0, /* 02 WSYNC  */ 0, /* 03 RSYNC  */ 0,
+  /* 04 NUSIZ0 */ 0, /* 05 NUSIZ1 */ 0, /* 06 COLUP0 */ 1, /* 07 COLUP1 */ 1,
+  /* 08 COLUPF */ 1, /* 09 COLUBK */ 1, /* 0A CTRLPF */ 0, /* 0B REFP0  */ 1,
+  /* 0C REFP1  */ 1, /* 0D PF0    */ 0, /* 0E PF1    */ 0, /* 0F PF2    */ 0,
+  /* 10 RESP0  */ 0, /* 11 RESP1  */ 0, /* 12 RESM0  */ 0, /* 13 RESM1  */ 0,
+  /* 14 RESBL  */ 0, /* 15 AUDC0  */ 0, /* 16 AUDC1  */ 0, /* 17 AUDF0  */ 0,
+  /* 18 AUDF1  */ 0, /* 19 AUDV0  */ 0, /* 1A AUDV1  */ 0, /* 1B GRP0   */ 0,
+  /* 1C GRP1   */ 0, /* 1D ENAM0  */ 0, /* 1E ENAM1  */ 0, /* 1F ENABL  */ 0,
+  /* 20 HMP0   */ 0, /* 21 HMP1   */ 0, /* 22 HMM0   */ 0, /* 23 HMM1   */ 0,
+  /* 24 HMBL   */ 0, /* 25 VDELP0 */ 0, /* 26 VDELP1 */ 0, /* 27 VDELBL */ 0,
+  /* 28 RESMP0 */ 0, /* 29 RESMP1 */ 0, /* 2A HMOVE  */ 0, /* 2B HMCLR  */ 0,
+  /* 2C CXCLR  */ 0, 0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0
+};
+
 __attribute__((section(".text.stellapd_hot.tia_poke")))
 void TIA::poke(uInt16 addr, uInt8 value)
 {
   Int32 clock;
   Int32 delta_clock;
   addr = addr & 0x003f;
+
+  // Fast path: redundant write to a pure-state register. Skip the entire
+  // updateFrame() catch-up + switch dispatch -- the resulting machine state
+  // would be identical to what we already have. WaveDirectSound disables
+  // this since it advances Tia_process based on elapsed cycles per poke.
+#ifndef TIA_NO_POKE_ELIDE
+  if (ourPokeElideEligible[addr] && myLastPokeValue[addr] == value
+      && !bWaveDirectSound)
+  {
+    return;
+  }
+#endif
+  myLastPokeValue[addr] = value;
 
   // Update frame to current CPU cycle before we make any changes!
   if (poke_needs_update_display[addr])
