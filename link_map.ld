@@ -15,9 +15,19 @@ SECTIONS
 {
 	.text :
 	{
-		/* Hot functions pinned 32-byte aligned. Source marks them via
-		   __attribute__((section(".text.stellapd_hot.<name>"))). */
-		. = ALIGN(32);
+		/* Anchor the entire hot-emulator region at a 256-byte boundary,
+		   so unrelated code changes elsewhere in .text can't shift the
+		   ENTIRE region around to a different cache-line residue and
+		   regress FPS by a few percent each time. Inside the region,
+		   place 32-byte alignment ONLY between large functions (cache-
+		   line granularity); back-to-back small helpers can share a
+		   line.
+		   Tried ALIGN(0x1000) here previously -- catastrophic 50%
+		   regression because every hot function then shared the SAME
+		   low 12 bits, maxing branch-predictor aliasing. ALIGN(0x100)
+		   gives stable anchoring with 256 distinct PC residues. */
+		. = ALIGN(0x100);
+
 		KEEP(*(.text.stellapd_hot.cpu_step_custom))
 		. = ALIGN(32);
 		KEEP(*(.text.stellapd_hot.execute_smol))
