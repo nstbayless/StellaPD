@@ -260,8 +260,9 @@ static unsigned cpu_step_custom(void) {
     }
 
     uint8_t opcode = FETCH8();
-    extern uint8_t s_last_opcode;
-    s_last_opcode = opcode;   // expose for the wrapper's cycle accounting
+    // No s_last_opcode global -- opcode is packed into the high byte of the
+    // return value (extras in the low byte). Wrapper extracts both with one
+    // shift each, avoiding a global store + load.
 
     // Single 32-bit load yields rare-flag, opcat, skip-read bit, and mf
     // (modeflags). Replaces 4 separate small-LUT loads.
@@ -588,8 +589,13 @@ static unsigned cpu_step_custom(void) {
     (void)cyc;   // vestigial; gcc DCEs all 10+ cyc updates since the result
                  // is unused. The wrapper measures elapsed cycles via
                  // gSystemCycles, not via this return.
-    return extras;   // taken-branch + page-cross extras (was smol_taken/rcross
-                     // globals -- now register-allocated through the macros).
+    // Pack opcode (high byte) and extras (low byte) into the return value:
+    //   bits 0..7  -- taken-branch + page-cross penalty (was smol_taken/rcross)
+    //   bits 8..15 -- the opcode we executed (used by the wrapper to look up
+    //                 smol_base_cyc and apply the deficit). Single u32
+    //                 return is cheaper than the old global s_last_opcode
+    //                 store + reload.
+    return ((unsigned)opcode << 8) | (extras & 0xFF);
 }
 #undef smol_taken
 #undef smol_rcross

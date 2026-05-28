@@ -94,11 +94,8 @@ static inline __attribute__((always_inline)) uint8_t smol_read_pc(void)
     return v;
 }
 
-// Captures the opcode FETCH8'd at the start of cpu_step_custom so the wrapper
-// can read it for cycle accounting WITHOUT doing a second PageAccess lookup.
-// Previously the wrapper smol_peek_nocycle'd the same byte before calling
-// cpu_step, costing ~10 cycles per instruction.
-static uint8_t s_last_opcode;
+// (Opcode formerly stored here at the start of cpu_step_custom; now packed
+// into the high byte of cpu_step_custom's return value.)
 
 // --- macros consumed by the included core -----------------------------------
 #define $A   s_A
@@ -204,10 +201,11 @@ void M6502Low::execute_smol(void)
         // standard 6502 base table so total per-instruction timing matches
         // Stella -- otherwise cumulative drift smears positioned sprites.
         uInt32 before = gSystemCycles;
-        unsigned extras = cpu_step_custom();         // fetches opcode + operands, executes
-        // Pulled from inside cpu_step_custom -- avoids the duplicate
-        // PageAccess lookup smol_peek_nocycle used to perform.
-        uint8_t op = s_last_opcode;
+        unsigned ret = cpu_step_custom();           // fetches opcode + operands, executes
+        // Packed return: opcode in bits 8..15, extras (taken+page-cross) in
+        // bits 0..7. Single u32 in r0, two cheap shifts to unpack.
+        uint8_t op       = (uint8_t)(ret >> 8);
+        unsigned extras  = ret & 0xFF;
         uInt32 used = gSystemCycles - before;        // all bus cycles this instruction
         int total = (int)smol_base_cyc[op] + (int)extras;
         if (total > (int)used) gSystemCycles += (total - (int)used);
@@ -244,8 +242,9 @@ extern "C" int smol_predict(const uint8_t pre[7], uint8_t post[7], unsigned* out
     s_nmi_irq = 0;
 
     s_predict = 1; s_predict_io = 0;
-    unsigned extras = cpu_step_custom();
-    uint8_t op = s_last_opcode;
+    unsigned ret = cpu_step_custom();
+    uint8_t op = (uint8_t)(ret >> 8);
+    unsigned extras = ret & 0xFF;
     s_predict = 0;
 
     post[0] = s_PCL; post[1] = s_PCH;
