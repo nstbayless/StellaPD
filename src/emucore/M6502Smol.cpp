@@ -59,7 +59,13 @@ static int s_predict_io = 0;
 #endif
 
 // --- memory: Stella page-access table (accurate path) -----------------------
-static inline uint8_t smol_mem(uint8_t lo, uint8_t hi, uint8_t val, uint8_t write)
+// always_inline: under -Os gcc declines to inline these despite the `inline`
+// hint, and pd-trace showed smol_mem + smol_read_pc as the #3/#5 hottest
+// symbols. Inlining lets the compiler fold the `write` constant at each
+// caller (dropping the read/write branch entirely on each path), and lets it
+// keep the PageAccess load close to the value use across the cpu_step_custom
+// instruction body.
+static inline __attribute__((always_inline)) uint8_t smol_mem(uint8_t lo, uint8_t hi, uint8_t val, uint8_t write)
 {
     uInt16 address = (uInt16)(((uInt16)hi << 8) | lo);
     PageAccess& acc = myPageAccessTable[(address & MY_ADDR_MASK) >> MY_PAGE_SHIFT];
@@ -81,7 +87,7 @@ static inline uint8_t smol_mem(uint8_t lo, uint8_t hi, uint8_t val, uint8_t writ
     return acc.device->peek(address);
 }
 
-static inline uint8_t smol_read_pc(void)
+static inline __attribute__((always_inline)) uint8_t smol_read_pc(void)
 {
     uint8_t v = smol_mem(s_PCL, s_PCH, 0, 0);
     if (++s_PCL == 0) s_PCH++;
