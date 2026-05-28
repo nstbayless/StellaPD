@@ -33,6 +33,19 @@ static uint32_t bit_reverse32(uint32_t x) {
 // constant expression.
 static uint32_t rare_instructions_table[8];
 
+// Flat per-opcode bool table, derived from rare_instructions_table at init.
+// Hot path uses this (1 byte load + cbnz) instead of the bit-packed table
+// (shift + LUT load + mask + shift + and + branch).
+// Aligned so the loaded byte sits on a clean offset.
+static uint8_t rare_opcode_byte_table[256] __attribute__((aligned(4)));
+
+// Pre-decoded (opcat, mode) per opcode. Populated by cpu_custom_init from the
+// original branchy decode logic (carve-outs for cc=00/cc=10 irregulars +
+// regular aaa-bbb-cc + LDX/STX index fixups). Per-instruction cost goes from
+// ~10-20 cycles of mask-and-compare to two byte loads.
+static uint8_t opcat_table[256] __attribute__((aligned(4)));
+static uint8_t mode_table[256]  __attribute__((aligned(4)));
+
 #define OPCAT_ORA 1
 #define OPCAT_ASL 2
 #define OPCAT_BIT 4
@@ -129,6 +142,45 @@ static void cpu_custom_init(void) {
     rare_instructions_table[5] = BITZ32(00010001, 00010001, 00110001, 00010001);
     rare_instructions_table[6] = BITZ32(00110001, 00010001, 00110001, 00010001);
     rare_instructions_table[7] = BITZ32(00110001, 00010001, 00111001, 00111001);
+
+    // Expand the bit-packed table into a 256-byte bool LUT for the hot path.
+    for (int i = 0; i < 256; ++i) {
+        rare_opcode_byte_table[i] =
+            (rare_instructions_table[i >> 5] & (1u << (i & 0x1F))) ? 1 : 0;
+    }
+
+    // Precompute opcat/mode per opcode by mirroring the branchy decode that
+    // used to run per-instruction in cpu_step_custom().
+    for (int op = 0; op < 256; ++op) {
+        uint8_t opcode = (uint8_t)op;
+        uint8_t mode = MODE_NONE;
+        uint8_t opcat = 0;
+
+        // Carve-outs for irregular cc=00 / cc=10 opcodes.
+        if ((opcode & 0x07) == 0 || (opcode & 0x07) == 2) {
+            if      ((opcode & 0x9F) == 0x00) opcat = OPCAT_CFLOW;   // BRK/JSR/RTI/RTS
+            else if ((opcode & 0x1F) == 0x10) { opcat = OPCAT_BRANCH; mode = MODE_IMM_n0; }
+            else if ((opcode & 0x9F) == 0x08) opcat = OPCAT_STACK;   // PHP/PLP/PHA/PLA
+            else if ((opcode & 0x9D) == 0x18) opcat = OPCAT_FLAGOP;  // CLC/SEC/CLI/SEI
+            else if ((opcode & 0x8D) == 0x88) opcat = OPCAT_REGOP;   // DEY/TYA/TAY/CLV/INY/CLD/INX/SED/TXA/TXS/TAX/TSX/DEX/NOP
+            // (LDX-imm 0xA2 falls through to the regular dispatch below.)
+        }
+
+        // Regular aaa-bbb-cc decode for the rest.
+        if (!opcat) {
+            opcat = (uint8_t)(((opcode & 0xE0) >> 3) | (opcode & 0x03));
+            mode  = (uint8_t)((opcode & 1) | ((opcode & 0x1C) >> 1));
+
+            if (opcat == OPCAT_LDX || opcat == OPCAT_STX) {
+                if      ((mode & ~1) == MODE_ZPG_X_n0) mode = MODE_ZPG_Y;
+                else if ((mode & ~1) == MODE_ABS_X_n0) mode = MODE_ABS_Y;
+            }
+            if (opcat == OPCAT_LDX && mode == MODE_IMM_n0) mode = MODE_IMM_n1;
+        }
+
+        opcat_table[opcode] = opcat;
+        mode_table[opcode]  = mode;
+    }
 }
 
 // Helper: set N/Z from a value (matches smolnes's set_nz).
@@ -143,7 +195,11 @@ static unsigned cpu_step_custom(void) {
 
     // ----- NMI/IRQ -----------------------------------------------------------
     // Matches smolnes's case-0 path for the NMI/IRQ branch.
-    if (nmi_irq) {
+    // On the 6507 (Atari 2600) NMI is not pinned out and IRQ is tied off, so
+    // this is *always* false in practice -- but the branch still has to be
+    // checked every instruction. unlikely() lets the compiler shove the
+    // interrupt-vector code out of the hot fall-through.
+    if (unlikely(nmi_irq)) {
         PUSH($PCH);
         PUSH($PCL);
         PUSH($P | 0x20);
@@ -157,45 +213,21 @@ static unsigned cpu_step_custom(void) {
     uint8_t opcode = FETCH8();
 
     // ----- Rare-opcode bail-out (illegal / unsupported) ----------------------
-    if (rare_instructions_table[opcode >> 5] & (1u << (opcode & 0x1F))) {
-        // Smolnes will re-fetch the opcode byte; rewind PC.
-        if ($PCL-- == 0) $PCH--;
+    // Use a flat 256-byte LUT (rare_opcode_byte_table) instead of the 8-word
+    // bit table -- compiles to a single `ldrb` + `cbnz`, ~3 cycles, vs the
+    // bit-pack approach's ~7 cycles (shift + LUT-word load + mask + shift +
+    // and + branch). The byte table is populated at init from the bit table.
+    if (unlikely(rare_opcode_byte_table[opcode])) {
+        if ($PCL-- == 0) $PCH--;   // smolnes refetches the opcode byte
         return cpu_step_smolnes();
     }
 
-    // ----- Decode opcat + mode ----------------------------------------------
-    uint8_t mode = MODE_NONE;
-    uint8_t opcat = 0;
-
-    // Carve-outs for irregular cc=00 / cc=10 opcodes that don't follow the
-    // aaa-bbb-cc pattern. Bottom 3 bits = 000 or 010.
-    if ((opcode & 0b00000111) == 0 || (opcode & 0b00000111) == 2) {
-        if      ((opcode & 0b10011111) == 0b00000000) opcat = OPCAT_CFLOW;   // BRK/JSR/RTI/RTS
-        // Branches span all 8 aaa values (BPL/BMI/BVC/BVS/BCC/BCS/BNE/BEQ),
-        // including aaa with bit 7 set, so the mask must NOT pin bit 7.
-        else if ((opcode & 0b00011111) == 0b00010000) { opcat = OPCAT_BRANCH; mode = MODE_IMM_n0; }
-        else if ((opcode & 0b10011111) == 0b00001000) opcat = OPCAT_STACK;   // PHP/PLP/PHA/PLA
-        else if ((opcode & 0b10011101) == 0b00011000) opcat = OPCAT_FLAGOP;  // CLC/SEC/CLI/SEI
-        else if ((opcode & 0b10001101) == 0b10001000) opcat = OPCAT_REGOP;   // DEY/TYA/TAY/CLV/INY/CLD/INX/SED/TXA/TXS/TAX/TSX/DEX/NOP
-        // (LDX-imm 0xA2 falls through to the regular dispatch below.)
-    }
-
-    // Regular aaa-bbb-cc decode for the rest.
-    if (!opcat) {
-        opcat = (uint8_t)(((opcode & 0xE0) >> 3) | (opcode & 0x03));
-        mode  = (uint8_t)((opcode & 1) | ((opcode & 0x1C) >> 1));
-
-        // LDX/STX use Y-indexing for their indexed modes (zp,Y / abs,Y).
-        if (opcat == OPCAT_LDX || opcat == OPCAT_STX) {
-            if      ((mode & ~1) == MODE_ZPG_X_n0) mode = MODE_ZPG_Y;
-            else if ((mode & ~1) == MODE_ABS_X_n0) mode = MODE_ABS_Y;
-        }
-        // LDX-immediate is the cc=10 outlier whose opcodelo5=2 decodes to
-        // mode 0 (IMM_n0, 4 cycles for the case-0 group LDY/CPY/CPX/BRK/...),
-        // but in smolnes it falls through to case 2 (0 cycles) instead.
-        // Redirect to IMM_n1 so the cycle count matches.
-        if (opcat == OPCAT_LDX && mode == MODE_IMM_n0) mode = MODE_IMM_n1;
-    }
+    // ----- Decode opcat + mode (LUT) ----------------------------------------
+    // Pre-baked tables populated by cpu_custom_init replace the ~10-20-cycle
+    // branchy decode that used to run per-instruction. See the original
+    // logic in the init function -- it's preserved there byte-for-byte.
+    uint8_t opcat = opcat_table[opcode];
+    uint8_t mode  = mode_table[opcode];
 
     // ----- Resolve operand from mode ----------------------------------------
     uint16_t mf      = modeflags_table[mode];
@@ -240,7 +272,7 @@ static unsigned cpu_step_custom(void) {
             cyc += (unsigned)((sta_grp | rmw_abs_e) | cross);
 #ifdef SMOL_CYCLE_EXACT
             // Extra cycle on a read that crosses a page boundary (abs,X/abs,Y).
-            if (reads_operand && cross) smol_rcross = 1;
+            if (unlikely(reads_operand && cross)) smol_rcross = 1;
 #endif
         }
         if (reads_operand) operand = mem((uint8_t)addr, (uint8_t)(addr >> 8), 0, 0);
@@ -257,7 +289,7 @@ static unsigned cpu_step_custom(void) {
             int sta_grp = (opcode & 0xE0) == 0x80;
             cyc += (unsigned)(sta_grp | cross);
 #ifdef SMOL_CYCLE_EXACT
-            if (reads_operand && cross) smol_rcross = 1;   // (ind),Y read crossing a page
+            if (unlikely(reads_operand && cross)) smol_rcross = 1;   // (ind),Y read crossing a page
 #endif
         } else {
             addr = ((uint16_t)hi << 8) | lo;
