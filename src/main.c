@@ -102,6 +102,7 @@ static int      s_numLines = 0;
 static int      s_emit     = 0;     // dither this emulated frame? (only the 2nd)
 static int      s_full     = 0;     // forced full repaint this tick
 static int      s_run_start = -1;   // contiguous dirty-row run accumulator
+static unsigned g_marked_rows = 0;  // diagnostic: dirty rows over the log window
 
 void stella_emit_scanline(const uint8_t* line, int row)
 {
@@ -111,6 +112,7 @@ void stella_emit_scanline(const uint8_t* line, int row)
     int changed = dither_row_to(o, line, row);
     if (s_full || changed) {
         if (s_run_start < 0) s_run_start = destRow;
+        g_marked_rows++;   // diagnostic: count rows actually transferred
     } else if (s_run_start >= 0) {
 #ifndef SKIP_ROW_MARK
         pd_->graphics->markUpdatedRows(s_run_start, destRow - 1);
@@ -317,12 +319,19 @@ static int update_cb(void* userdata)
             unsigned int dt = now - last_ms;
             // 120 frames over dt ms -> fps*100 to avoid float in the log
             unsigned int fps100 = dt ? (120u * 100000u) / dt : 0;
-            pd_->system->logToConsole("FPS: %u.%02u (%u ms) emu=%u ms ren=%u ms /120f",
-                                      fps100 / 100, fps100 % 100, dt, emu_ms, ren_ms);
+            unsigned rows_per_frame = 0;
+#ifdef STELLA_SCANLINE_DITHER
+            rows_per_frame = g_marked_rows / 120;
+#endif
+            pd_->system->logToConsole("FPS: %u.%02u (%u ms) emu=%u ren=%u /120f  dirtyrows/frame=%u",
+                                      fps100 / 100, fps100 % 100, dt, emu_ms, ren_ms, rows_per_frame);
         }
         last_ms = now;
         emu_ms = 0;
         ren_ms = 0;
+#ifdef STELLA_SCANLINE_DITHER
+        g_marked_rows = 0;
+#endif
     }
     if (frame_count == kScreenshotFrame) save_screenshot();
     return 1;

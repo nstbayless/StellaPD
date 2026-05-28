@@ -109,6 +109,10 @@ ULIBS =
 
 include $(SDK)/C_API/buildsupport/common.mk
 
+# Build the C glue at -Os too (common.mk defaults to -O2). The hot code is the
+# C++ emucore (already -Os); this is just for I-cache-friendly consistency.
+OPT = -Os -falign-functions=16 -fomit-frame-pointer
+
 # ---- C++ extension ---------------------------------------------------------
 # common.mk only knows about .c files; add rules for .cpp.
 
