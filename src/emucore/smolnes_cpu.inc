@@ -137,6 +137,7 @@ static inline void cpu_set_nz(uint8_t v) {
     $Z = (v == 0);
 }
 
+__attribute__((section(".text.stellapd_hot.cpu_step_custom")))
 static unsigned cpu_step_custom(void) {
     unsigned cyc = 0;
 

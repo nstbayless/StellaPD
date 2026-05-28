@@ -176,6 +176,7 @@ static const uint8_t smol_base_cyc[256] = {
 // --- entry/exit state sync ---------------------------------------------------
 static int s_inited = 0;
 
+__attribute__((section(".text.stellapd_hot.execute_smol")))
 void M6502Low::execute_smol(void)
 {
     if (!s_inited) { cpu_custom_init(); s_inited = 1; }

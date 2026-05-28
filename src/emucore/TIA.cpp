@@ -1240,6 +1240,7 @@ void TIA::computePlayfieldMaskTable()
 // large if-then-else blocks to help with code execution to get as many
 // games running at full frame rate as possible...
 // -----------------------------------------------------------------------
+__attribute__((section(".text.stellapd_hot.tia_handleObjectsAndCollisions")))
 void TIA::handleObjectsAndCollisions(Int32 clocksToUpdate, Int32 hpos)
 {
     uInt8 last_color=0;
@@ -1281,6 +1282,7 @@ void TIA::handleObjectsNoCollisions(Int32 clocksToUpdate, Int32 hpos)
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+__attribute__((section(".text.stellapd_hot.tia_updateFrame")))
 ITCM_CODE void TIA::updateFrame(Int32 clock)
 {
   // -------------------------------------------------------------------------------------
@@ -1892,8 +1894,9 @@ void HackGIJoe(Int32 clock)
 }
 
 #ifndef TIA_HMOVE_DEBUG
-ITCM_CODE 
+ITCM_CODE
 #endif
+__attribute__((section(".text.stellapd_hot.tia_poke")))
 void TIA::poke(uInt16 addr, uInt8 value)
 {
   Int32 clock;

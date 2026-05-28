@@ -113,6 +113,10 @@ include $(SDK)/C_API/buildsupport/common.mk
 # C++ emucore (already -Os); this is just for I-cache-friendly consistency.
 OPT = -Os -falign-functions=16 -fomit-frame-pointer
 
+# Custom linker script pins our hot emulator functions to 32-byte cache-line-
+# aligned slots at the start of .text. See link_map.ld.
+override LDSCRIPT = ./link_map.ld
+
 # ---- C++ extension ---------------------------------------------------------
 # common.mk only knows about .c files; add rules for .cpp.
 
