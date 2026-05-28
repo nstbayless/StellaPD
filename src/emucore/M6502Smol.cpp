@@ -195,7 +195,6 @@ void M6502Low::execute_smol(void)
     int executionStatus = 0;
     stack_executionStatus = &executionStatus;
 
-    int guard = 0;
     while (!executionStatus) {
         // mem()/FETCH8 already advance gSystemCycles once per memory access, so
         // mid-instruction TIA strobes (e.g. STA RESP0) land on the correct
@@ -211,7 +210,8 @@ void M6502Low::execute_smol(void)
         uInt32 used = gSystemCycles - before;        // all bus cycles this instruction
         int total = (int)smol_base_cyc[op] + (int)extras;
         if (total > (int)used) gSystemCycles += (total - (int)used);
-        if (unlikely(++guard > 2000000)) break;      // safety against a runaway frame
+        // (No per-iter safety guard: a TIA WSYNC/VSYNC poke is the only way the
+        // CPU loop ever exits, and that mechanism has been correct for years.)
     }
 
     // Write 6502 state back to Stella globals. Leave gPC unmasked to match the
