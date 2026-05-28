@@ -48,25 +48,29 @@ static smol_p_t s_Pun;
 static uint8_t s_nmi_irq = 0;   // 6507 has no NMI; IRQ tied off -> always 0
 
 // Predict mode (instruction-level comparison): when set, smol_mem must NOT
-// mutate the machine -- writes are suppressed and reads come straight from
-// RAM/ROM via the page table. A read that would hit a device (TIA/RIOT, which
-// can have read side effects) sets s_predict_io so the comparison driver can
-// skip that instruction rather than corrupt canonical state. No cycle counting
-// in predict mode (the driver derives cycles from the base table).
+// mutate the machine. ONLY exists in the dual-CPU comparison build -- gating
+// it under STELLA_DUAL_CPU compiles the dead if(s_predict) branch out of the
+// device build, cutting ~2.3% off smol_mem and ~2.7% off smol_read_pc per
+// pd-trace (the load+branch on a non-const global was unavoidable for the
+// compiler otherwise).
+#ifdef STELLA_DUAL_CPU
 static int s_predict = 0;
 static int s_predict_io = 0;
+#endif
 
 // --- memory: Stella page-access table (accurate path) -----------------------
 static inline uint8_t smol_mem(uint8_t lo, uint8_t hi, uint8_t val, uint8_t write)
 {
     uInt16 address = (uInt16)(((uInt16)hi << 8) | lo);
     PageAccess& acc = myPageAccessTable[(address & MY_ADDR_MASK) >> MY_PAGE_SHIFT];
+#ifdef STELLA_DUAL_CPU
     if (s_predict) {
         if (write) return 0;                                  // suppress writes
         if (acc.directPeekBase) return *(acc.directPeekBase + (address & MY_PAGE_MASK));
         s_predict_io = 1;                                     // device read -> can't validate
         return 0;
     }
+#endif
     gSystemCycles++;
     if (write) {
         if (acc.directPokeBase) *(acc.directPokeBase + (address & MY_PAGE_MASK)) = val;
@@ -218,6 +222,7 @@ void M6502Low::execute_smol(void)
 // RIOT) -- the driver skips comparing those, since predict can't reproduce
 // read side effects without corrupting canonical state.
 //   pre/post layout: [0]=PClo [1]=PChi [2]=A [3]=X [4]=Y [5]=SP [6]=P
+#ifdef STELLA_DUAL_CPU
 extern "C" int smol_predict(const uint8_t pre[7], uint8_t post[7], unsigned* out_cyc)
 {
     if (!s_inited) { cpu_custom_init(); s_inited = 1; }
@@ -239,5 +244,6 @@ extern "C" int smol_predict(const uint8_t pre[7], uint8_t post[7], unsigned* out
     *out_cyc = (unsigned)smol_base_cyc[op] + smol_taken + smol_rcross;
     return s_predict_io;
 }
+#endif // STELLA_DUAL_CPU
 
 #endif // USE_SMOLNES_CPU || STELLA_DUAL_CPU
