@@ -1255,8 +1255,25 @@ void TIA::handleObjectsAndCollisions(Int32 clocksToUpdate, Int32 hpos)
     uInt8 last_color=0;
     uInt8 last_enabled=255;
     uInt8* ending = myFramePointer + clocksToUpdate;  // Calculate the ending frame pointer value
-    
+
     uint8* mfp = myFramePointer;
+
+    // Warm L1 D-cache for the per-pixel mask reads. Each scanline starts
+    // at a fresh hpos in different 320-byte mask sub-arrays; the hardware
+    // prefetcher hasn't seen this stride before. These prefetches issue at
+    // function entry and complete in the shadow of switch dispatch + case
+    // body setup, so by the time the inner loop reads byte 0 of each mask
+    // the line is already in L1. (M7 has a 32-byte cache line.)
+    //
+    // Adding a 2nd prefetch at hpos+32 measured slightly slower on DK -- the
+    // M7's 4 outstanding LD slots + hardware sequential prefetcher already
+    // covers the rest of the run.
+    __builtin_prefetch(&myCurrentPFMask[hpos], 0, 0);
+    __builtin_prefetch(&myCurrentBLMask[hpos], 0, 0);
+    __builtin_prefetch(&myCurrentP0Mask[hpos], 0, 0);
+    __builtin_prefetch(&myCurrentP1Mask[hpos], 0, 0);
+    __builtin_prefetch(&myCurrentM0Mask[hpos], 0, 0);
+    __builtin_prefetch(&myCurrentM1Mask[hpos], 0, 0);
 
     switch (myEnabledObjects)
     {
