@@ -46,6 +46,11 @@ static uint8_t rare_opcode_byte_table[256] __attribute__((aligned(4)));
 static uint8_t opcat_table[256] __attribute__((aligned(4)));
 static uint8_t mode_table[256]  __attribute__((aligned(4)));
 
+// Per-opcode mf (modeflags) preview, folding the mode_table -> modeflags_table
+// chain into a single load. Used by the hot path; mode_table itself stays for
+// init bookkeeping. Saves ~2-3 cycles per instruction in cpu_step_custom.
+static uint16_t mf_per_op_table[256] __attribute__((aligned(4)));
+
 #define OPCAT_ORA 1
 #define OPCAT_ASL 2
 #define OPCAT_BIT 4
@@ -178,8 +183,17 @@ static void cpu_custom_init(void) {
             if (opcat == OPCAT_LDX && mode == MODE_IMM_n0) mode = MODE_IMM_n1;
         }
 
-        opcat_table[opcode] = opcat;
-        mode_table[opcode]  = mode;
+        // Encode "this opcat does not read its operand" in bit 7 of the
+        // opcat slot. Hot-path replacement for the 4-compare expression
+        //   (opcat != STA && opcat != STX && opcat != STY && opcat != JMP)
+        // The opcat values themselves only use bits 0-5, so bit 7 is free.
+        if (opcat == OPCAT_STA || opcat == OPCAT_STX ||
+            opcat == OPCAT_STY || opcat == OPCAT_JMP)
+            opcat |= 0x80;
+
+        opcat_table[opcode]      = opcat;
+        mode_table[opcode]       = mode;
+        mf_per_op_table[opcode]  = modeflags_table[mode];
     }
 }
 
@@ -222,15 +236,16 @@ static unsigned cpu_step_custom(void) {
         return cpu_step_smolnes();
     }
 
-    // ----- Decode opcat + mode (LUT) ----------------------------------------
+    // ----- Decode opcat + mf (LUTs) -----------------------------------------
     // Pre-baked tables populated by cpu_custom_init replace the ~10-20-cycle
-    // branchy decode that used to run per-instruction. See the original
-    // logic in the init function -- it's preserved there byte-for-byte.
-    uint8_t opcat = opcat_table[opcode];
-    uint8_t mode  = mode_table[opcode];
+    // branchy decode that used to run per-instruction. High bit of opcat
+    // entry encodes "skip operand read" (STA/STX/STY/JMP). mf_per_op_table
+    // folds the old mode_table -> modeflags_table chain into a single load.
+    uint8_t  opcat_raw = opcat_table[opcode];
+    uint8_t  opcat     = (uint8_t)(opcat_raw & 0x7F);
 
     // ----- Resolve operand from mode ----------------------------------------
-    uint16_t mf      = modeflags_table[mode];
+    uint16_t mf      = mf_per_op_table[opcode];
     cyc += (mf >> MF_CYCLES_SHIFT);
     uint8_t  mfc     = mf & MF_CATEGORY_BITS;
     bool     use_x   = !!(mf & MF_USE_X);
@@ -238,10 +253,9 @@ static unsigned cpu_step_custom(void) {
     uint8_t  operand = 0;
     uint16_t addr    = 0;
     int      cross   = 0;
-    bool     reads_operand = (opcat != OPCAT_STA &&
-                              opcat != OPCAT_STX &&
-                              opcat != OPCAT_STY &&
-                              opcat != OPCAT_JMP);
+    // bit 7 of opcat_raw is "skip operand read" (STA/STX/STY/JMP). Compiles
+    // to a single 'tst opcat_raw, #0x80' on M7.
+    bool     reads_operand = !(opcat_raw & 0x80);
 
     switch (mfc) {
     case MFC_NONE:
