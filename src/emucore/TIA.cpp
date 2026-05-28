@@ -1461,13 +1461,17 @@ ITCM_CODE void TIA::updateFrame(Int32 clock)
     }
 
     // ------------------------------------------------------------------------
-    // If we are mid-scanline... we record the background color for blending
+    // myBlendBk is consumed only by the DS-side frame blender (below, behind
+    // STELLA_PLAYDATE guard). On Playdate we never read it -- skip the per-
+    // iteration load+store on this hot per-iteration path.
     // ------------------------------------------------------------------------
+#ifndef STELLA_PLAYDATE
     if (myClocksToEndOfScanLine < 190)
     {
         myBlendBk = myColor[MYCOLUBK];
     }
     else
+#endif
     // See if we're at the end of a scanline
     if(myClocksToEndOfScanLine == 228)
     {
