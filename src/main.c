@@ -288,20 +288,58 @@ static int update_cb(void* userdata)
     static int frame_count = 0;
     static unsigned int last_ms = 0;
 
+    // Just two timestamps: very start and very end of update_cb. Sum across
+    // 120 ticks. If sum_inside < dt (period across 120 ticks), the wall is
+    // BETWEEN ticks (system pacing). If sum_inside ~= dt, the wall is INSIDE
+    // (something we call blocks/runs that long). Decisive test.
+    static unsigned int sum_inside = 0;
+    unsigned int ta = pd_->system->getCurrentTimeMilliseconds();
+
+    // Incremental bisection: TICK_STAGE controls what runs inside update_cb.
+    //   0: nothing (empty tick) -- measured ~13000 Hz
+    //   1: + 2x stella_run_frame (CPU + TIA, no display calls at all)
+    //   2: + render_begin / render_end (markUpdatedRows on dirty rows)
+    //   3: + drawFPS (full normal build)
+#ifndef TICK_STAGE
+#define TICK_STAGE 3
+#endif
+
+#if TICK_STAGE == 0
+    static int frame_count_e = 0;
+    static unsigned int last_ms_e = 0;
+    if (++frame_count_e % 120 == 0) {
+        unsigned int now = pd_->system->getCurrentTimeMilliseconds();
+        if (last_ms_e) {
+            unsigned int dt = now - last_ms_e;
+            unsigned int fps100 = dt ? (120u * 100000u) / dt : 0;
+            pd_->system->logToConsole("STAGE0 EMPTY FPS %u.%02u dt=%u",
+                fps100/100, fps100%100, dt);
+        }
+        last_ms_e = now;
+    }
+    return 1;
+#endif
+
     poll_input();
-    // Atari is 60 Hz; the Playdate display runs at 30 Hz. Emulate two Atari
-    // frames per tick so the game runs at correct speed, and only display the
-    // second (the first frame's pixels would be overwritten anyway).
-    unsigned int t0 = pd_->system->getCurrentTimeMilliseconds();
-    unsigned int t1, t2;
 #ifdef STELLA_SCANLINE_DITHER
-    // Dither happens inside the TIA scanline hook; only the 2nd frame displays.
+#if TICK_STAGE >= 2
     render_begin();
-    s_emit = 0; stella_run_frame();   // frame 1: emulate only, no dither
-    s_emit = 1; stella_run_frame();   // frame 2: emulate + dither-on-complete
+#endif
+#if TICK_STAGE >= 1
+    s_emit = 0; stella_run_frame();
+#if TICK_STAGE >= 2
+    s_emit = 1; stella_run_frame();
+#else
+    s_emit = 0; stella_run_frame();   // both frames non-emit if no display calls
+#endif
+#endif
+#if TICK_STAGE >= 2
     render_end();
+#endif
+    unsigned int t1, t2;
     t1 = t2 = pd_->system->getCurrentTimeMilliseconds();
 #else
+    unsigned int t1, t2;
     stella_run_frame();
     stella_run_frame();
     t1 = pd_->system->getCurrentTimeMilliseconds();
@@ -309,9 +347,14 @@ static int update_cb(void* userdata)
     t2 = pd_->system->getCurrentTimeMilliseconds();
 #endif
     static unsigned int emu_ms = 0, ren_ms = 0;
-    emu_ms += (t1 - t0);
+    emu_ms += (t1 - ta);   // crude: time from start of update_cb to after run2
     ren_ms += (t2 - t1);
+#if TICK_STAGE >= 3
     pd_->system->drawFPS(0, 0);
+#endif
+
+    unsigned int th = pd_->system->getCurrentTimeMilliseconds();
+    sum_inside += (th - ta);
 
     if (++frame_count % 120 == 0) {
         unsigned int now = pd_->system->getCurrentTimeMilliseconds();
@@ -323,8 +366,10 @@ static int update_cb(void* userdata)
 #ifdef STELLA_SCANLINE_DITHER
             rows_per_frame = g_marked_rows / 120;
 #endif
-            pd_->system->logToConsole("FPS: %u.%02u (%u ms) emu=%u ren=%u /120f  dirtyrows/frame=%u",
-                                      fps100 / 100, fps100 % 100, dt, emu_ms, ren_ms, rows_per_frame);
+            pd_->system->logToConsole("FPS %u.%02u dt=%u inside=%u gap_between=%d (per120f, ms)",
+                fps100 / 100, fps100 % 100, dt, sum_inside, (int)dt - (int)sum_inside);
+            sum_inside = 0;
+            emu_ms = ren_ms = 0;
         }
         last_ms = now;
         emu_ms = 0;
@@ -334,7 +379,15 @@ static int update_cb(void* userdata)
 #endif
     }
     if (frame_count == kScreenshotFrame) save_screenshot();
+    // Diagnostic: returning 0 tells the system not to refresh the display this
+    // tick. If the wall is the display refresh, this should let update_cb run
+    // back-to-back (much higher FPS counter). If it doesn't, the wall is
+    // elsewhere.
+#ifdef RETURN_ZERO
+    return 0;
+#else
     return 1;
+#endif
 }
 
 // --- ROM load: try rom.a26 then rom.bin from the .pdx ---------------------
@@ -409,7 +462,10 @@ int eventHandler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg)
         // future ITCM/DTCM pass on smaller hot state.
         stella_alloc_buffers();
         if (!load_rom(pd)) return 0;
-        pd->display->setRefreshRate(30);   // half-rate to match TIA workload
+        pd->display->setRefreshRate(0);    // ASAP: system clocks update_cb faster
+                                           // than 30Hz when dirty rows are few
+                                           // (per SDK: refresh=0 -> indeterminate
+                                           // higher rate). Matches CrankBoy.
         pd->system->setAutoLockDisabled(1); // keep the device awake during dev/testing
         pd->system->addMenuItem("Reset",  on_menu_reset,  NULL);
         pd->system->addMenuItem("Select", on_menu_select, NULL);
