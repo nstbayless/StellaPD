@@ -52,6 +52,20 @@ uInt32  myStopDisplayOffset         ;
 Int32   myVSYNCFinishClock          ;
 uInt8*  myCurrentFrameBuffer[2]     ;
 uInt8*  myFramePointer              ;
+
+#ifdef STELLA_SCANLINE_DITHER
+// Scanline-at-a-time rendering: instead of the TIA filling a full 160xN frame
+// buffer that the frontend dithers afterward (write 33KB, read 33KB back --
+// thrashes the D-cache), the TIA renders ONE scanline into this small buffer
+// and the frontend dithers it to the LCD the moment the line completes (with
+// row-diff/xor at write time). Keeps the working set hot in cache.
+// Padded past 160 so 32-bit span writes near the right edge can't overrun.
+uInt8 tia_scanline[192] __attribute__((aligned(4)));
+int   tia_scanRow = 0;   // 0-based visible scanline index within the frame
+// Provided by the frontend (main.c on device, host_test on host). Dithers the
+// 160 palette-index pixels of completed visible line `row` to the display.
+extern "C" void stella_emit_scanline(const uInt8* line, int row);
+#endif
 uInt16* myDSFramePointer            ;
 Int32   myLastHMOVEClock            ;
 uInt32  ourPlayfieldTable[2][160]   ;
@@ -398,7 +412,12 @@ void TIA::reset()
   computePlayerMaskTable();
 
   // Reset pixel pointer and drawing flag
+#ifdef STELLA_SCANLINE_DITHER
+  myFramePointer = tia_scanline;
+  tia_scanRow = 0;
+#else
   myFramePointer = myCurrentFrameBuffer[0];
+#endif
   myDSFramePointer = BG_GFX;
 
   // Calculate color clock offsets for starting and stoping frame drawing
@@ -553,8 +572,13 @@ ITCM_CODE void TIA::update()
   myClocksToEndOfScanLine = 228;
 
   // Reset frame buffer pointer
+#ifdef STELLA_SCANLINE_DITHER
+  myFramePointer = tia_scanline;   // render into the single hot scanline buffer
+  tia_scanRow = 0;
+#else
   myCurrentFrame = (myCurrentFrame + 1) % 2;
   myFramePointer = myCurrentFrameBuffer[myCurrentFrame];
+#endif
   myDSFramePointer = BG_GFX;
 
   bWaveDirectSound = (myCartInfo.soundQuality == SOUND_WAVE);
@@ -1415,6 +1439,13 @@ ITCM_CODE void TIA::updateFrame(Int32 clock)
     // See if we're at the end of a scanline
     if(myClocksToEndOfScanLine == 228)
     {
+#ifdef STELLA_SCANLINE_DITHER
+      // A visible scanline just finished: its 160 pixels are at tia_scanline.
+      // Hand it to the frontend to dither straight to the LCD, then rewind the
+      // frame pointer so the next line reuses the same hot buffer.
+      stella_emit_scanline(tia_scanline, tia_scanRow++);
+      myFramePointer = tia_scanline;
+#endif
       // Yes, so set PF mask based on current CTRLPF reflection state
       myCurrentPFMask = ourPlayfieldTable[myCTRLPF & 0x01];
 

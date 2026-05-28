@@ -29,6 +29,7 @@ extern uint32_t      stella_display_num_scanlines(void);
 extern void          stella_set_input(uint8_t up, uint8_t down, uint8_t left, uint8_t right,
                                       uint8_t fire, uint8_t select_, uint8_t reset_);
 extern const char*   stella_cart_name(void);
+#ifdef STELLA_DUAL_CPU
 extern void          stella_set_cpu_core(int core);
 extern void          stella_frame_signature(uint32_t* fb_crc, uint32_t* cpu_crc, uint32_t* cycles);
 extern uint32_t      stella_regs(uint8_t out[7]);
@@ -38,10 +39,26 @@ extern uint16_t g_cmp_pc;
 extern uint8_t  g_cmp_op;
 extern char   g_cmp_field[8];
 extern uint32_t g_cmp_stella, g_cmp_smol;
+#endif
 
 #define LCD_W 400
 #define LCD_H 240
 #define LCD_ROW (LCD_W / 8)        // 50 bytes packed MSB
+
+#ifdef STELLA_SCANLINE_DITHER
+// In scanline mode the TIA calls this per completed visible line instead of
+// filling a full frame buffer. Collect the lines so the capture path can still
+// dump a PGM/PBM (holds the most recent frame's visible rows).
+static uint8_t g_host_frame[160 * 300];
+static int     g_host_rows = 0;
+void stella_emit_scanline(const uint8_t* line, int row)
+{
+    if (row < 0 || row >= 300) return;
+    memcpy(&g_host_frame[row * 160], line, 160);
+    if (row + 1 > g_host_rows) g_host_rows = row + 1;
+}
+const uint8_t* host_collected_frame(int* rows) { *rows = g_host_rows; return g_host_frame; }
+#endif
 
 static const uint8_t kBayer4[16] = {
      0, 128,  32, 160,
@@ -72,10 +89,9 @@ static void write_pgm(const char* path, const uint8_t* fb, int w, int h)
 
 // Same dither + 2x horizontal scale as main.c render_frame, but writes to a
 // 50 B/row bitmap rather than the Playdate LCD framebuffer.
-static void render_lcd_dither(const uint8_t* fb, uint8_t* lcd)
+static void render_lcd_dither_off(const uint8_t* fb, uint8_t* lcd, uint32_t startLine)
 {
     memset(lcd, 0xFF, LCD_ROW * LCD_H);   // white = bit 1
-    uint32_t startLine = stella_display_start_scanline();
     uint32_t numLines  = stella_display_num_scanlines();
     if (numLines > LCD_H) numLines = LCD_H;
     const int xOff = (LCD_W - 160 * 2) / 2;
@@ -139,6 +155,7 @@ int main(int argc, char** argv)
 
     // --- compare mode: run the same ROM under both CPU cores and report the
     //     first frame whose state signature diverges. -----------------------
+#ifdef STELLA_DUAL_CPU
     int compare = (argc > 2 && strcmp(argv[2], "--compare") == 0);
     if (compare) {
         int n = (argc > 3) ? atoi(argv[3]) : 600;
@@ -173,6 +190,7 @@ int main(int argc, char** argv)
                 g_cmp_stella, g_cmp_stella, g_cmp_smol, g_cmp_smol);
         return 1;
     }
+#endif // STELLA_DUAL_CPU
 
     int frames = (argc > 2) ? atoi(argv[2]) : 300;
     char prefix_buf[256];
@@ -201,17 +219,31 @@ int main(int argc, char** argv)
     stella_set_input(0, 0, 0, 0, 0, 0, 0);
     for (int i = 0; i < frames; ++i) stella_run_frame();
 
-    const uint8_t* fb = stella_framebuffer();
-    int w = (int)stella_fb_width();
-    int h = (int)stella_fb_height();
+    const uint8_t* fb;
+    uint32_t startLine;
+    int w = 160;
+    int h;
+#ifdef STELLA_SCANLINE_DITHER
+    // Scanline mode: the full buffer is never filled; use the per-line frame
+    // collected by our stella_emit_scanline (rows are already visible-relative).
+    extern const uint8_t* host_collected_frame(int* rows);
+    int rows = 0;
+    fb = host_collected_frame(&rows);
+    startLine = 0;
+    h = rows;
+#else
+    fb = stella_framebuffer();
+    startLine = stella_display_start_scanline();
+    h = (int)stella_fb_height();
+#endif
 
     char path[512];
     snprintf(path, sizeof(path), "%s.pgm", prefix);
-    write_pgm(path, fb, w, h);
+    write_pgm(path, fb + startLine * 160, w, h);
     fprintf(stderr, "wrote %s (%dx%d, 8-bit)\n", path, w, h);
 
     static uint8_t lcd[LCD_ROW * LCD_H];
-    render_lcd_dither(fb, lcd);
+    render_lcd_dither_off(fb, lcd, startLine);
     snprintf(path, sizeof(path), "%s.pbm", prefix);
     write_pbm(path, lcd);
     fprintf(stderr, "wrote %s (%dx%d, 1-bit dithered)\n", path, LCD_W, LCD_H);

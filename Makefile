@@ -77,6 +77,23 @@ SMOL_DEFS += -DDISABLE_COLLISIONS
 UDEFS += -DDISABLE_COLLISIONS
 endif
 
+# Diagnostic: skip markUpdatedRows so the firmware does no display push.
+# Used to measure how much of "hidden/OS:0" is the display flush. make SKIP_ROW_MARK=1
+ifeq ($(SKIP_ROW_MARK),1)
+UDEFS += -DSKIP_ROW_MARK
+endif
+
+# Scanline-at-a-time rendering (TIA dithers each line to the LCD as it
+# completes, instead of filling a full frame buffer dithered afterward). On by
+# default; disabled for the dual-CPU comparison build, which needs the full
+# frame buffer + stella_frame_signature. SCANLINE_DEFS is also passed to the
+# simulator and host_test rules below.
+SCANLINE_DEFS = -DSTELLA_SCANLINE_DITHER
+ifeq ($(COMPARE_CPU),1)
+SCANLINE_DEFS =
+endif
+UDEFS += $(SCANLINE_DEFS)
+
 # Dual-CPU comparison build: compile BOTH cores, select at runtime, expose the
 # compare API. Used by the host harness (host_test ... --compare). Enable with:
 # make host_test COMPARE_CPU=1
@@ -119,7 +136,7 @@ $(OBJDIR)/pdex.elf: $(OBJS) $(CXX_OBJS) $(LDSCRIPT)
 
 # Override the simulator rule: g++ compiles cpp + links
 $(OBJDIR)/pdex.${DYLIB_EXT}: $(SRC) $(CXXSRC) | MKOBJDIR
-	$(CXX_NATIVE) -g $(DYLIB_FLAGS) -lm -DTARGET_SIMULATOR=1 -DTARGET_EXTENSION=1 $(SMOL_DEFS) \
+	$(CXX_NATIVE) -g $(DYLIB_FLAGS) -lm -DTARGET_SIMULATOR=1 -DTARGET_EXTENSION=1 $(SMOL_DEFS) $(SCANLINE_DEFS) \
 		-fno-exceptions -fno-rtti -fno-threadsafe-statics \
 		-x c $(SRC) -x c++ $(CXXSRC) \
 		$(INCDIR) -o $(OBJDIR)/pdex.${DYLIB_EXT}
@@ -134,7 +151,7 @@ HOST_TEST_BIN = build/host_test
 host_test: $(HOST_TEST_BIN)
 
 $(HOST_TEST_BIN): $(HOST_TEST_SRC) | MKOBJDIR
-	$(CXX_NATIVE) -g -O2 -DHOST_TEST=1 $(SMOL_DEFS) \
+	$(CXX_NATIVE) -g -O2 -DHOST_TEST=1 $(SMOL_DEFS) $(SCANLINE_DEFS) \
 		-fno-exceptions -fno-rtti -fno-threadsafe-statics \
 		-Wno-narrowing -Wno-write-strings -Wno-deprecated-declarations \
 		-I . -I src -I src/emucore \

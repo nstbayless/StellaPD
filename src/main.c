@@ -60,6 +60,109 @@ static void init_luma_lut(void)
 // thresholds [t0,t1, t2,t3, t0,t1, t2,t3] (derived from (x*2+s)&3). A bit is
 // white(1) when luma >= threshold, else black(0).
 #define DEST_BYTE_X  5      // (LCD_COLUMNS - 320)/2 / 8 = 40/8
+
+// Force a full repaint + full dirty mark on the next frame (first frame, or
+// whenever the display geometry changes, e.g. controller/console reload).
+static int  g_force_full_repaint = 1;
+static int  g_last_numLines = -1, g_last_yOff = -1;
+
+void stella_force_full_repaint(void) { g_force_full_repaint = 1; }
+
+// Dither one 160-px source row to one packed LCD row (bytes [DEST_BYTE_X..+40)),
+// XOR-comparing against what's there. Returns nonzero if the row changed.
+static inline int dither_row_to(uint8_t* o, const uint8_t* row, int bayerRow)
+{
+    const uint8_t* by = kBayer4 + ((bayerRow & 3) << 2);
+    const uint8_t t0 = by[0], t1 = by[1], t2 = by[2], t3 = by[3];
+    uint8_t diff = 0;
+    for (int b = 0; b < 40; ++b)
+    {
+        const uint8_t* p = row + (b << 2);
+        uint8_t l0 = lumaLUT[p[0]], l1 = lumaLUT[p[1]];
+        uint8_t l2 = lumaLUT[p[2]], l3 = lumaLUT[p[3]];
+        uint8_t v = 0;
+        if (l0 >= t0) v |= 0x80; if (l0 >= t1) v |= 0x40;
+        if (l1 >= t2) v |= 0x20; if (l1 >= t3) v |= 0x10;
+        if (l2 >= t0) v |= 0x08; if (l2 >= t1) v |= 0x04;
+        if (l3 >= t2) v |= 0x02; if (l3 >= t3) v |= 0x01;
+        diff |= (uint8_t)(o[b] ^ v);
+        o[b] = v;
+    }
+    return diff != 0;
+}
+
+#ifdef STELLA_SCANLINE_DITHER
+// --- Scanline-at-a-time path -----------------------------------------------
+// The TIA calls stella_emit_scanline() for each completed visible line; we
+// dither it straight to the LCD here. Frame setup/flush bracket the two
+// stella_run_frame() calls (we only display the 2nd emulated Atari frame).
+static uint8_t* s_fb       = 0;     // cached getFrame() for the current tick
+static int      s_yOff     = 0;
+static int      s_numLines = 0;
+static int      s_emit     = 0;     // dither this emulated frame? (only the 2nd)
+static int      s_full     = 0;     // forced full repaint this tick
+static int      s_run_start = -1;   // contiguous dirty-row run accumulator
+
+void stella_emit_scanline(const uint8_t* line, int row)
+{
+    if (!s_emit || row < 0 || row >= s_numLines) return;
+    int destRow = s_yOff + row;
+    uint8_t* o = s_fb + destRow * LCD_ROWSIZE + DEST_BYTE_X;
+    int changed = dither_row_to(o, line, row);
+    if (s_full || changed) {
+        if (s_run_start < 0) s_run_start = destRow;
+    } else if (s_run_start >= 0) {
+#ifndef SKIP_ROW_MARK
+        pd_->graphics->markUpdatedRows(s_run_start, destRow - 1);
+#endif
+        s_run_start = -1;
+    }
+}
+
+// Called before the two stella_run_frame() calls each tick.
+static void render_begin(void)
+{
+    uint32_t numLines = stella_display_num_scanlines();
+    if (numLines > (uint32_t)LCD_ROWS) numLines = LCD_ROWS;
+    int yOff = ((int)LCD_ROWS - (int)numLines) / 2;
+    if (yOff < 0) yOff = 0;
+
+    if ((int)numLines != g_last_numLines || yOff != g_last_yOff)
+        g_force_full_repaint = 1;
+    g_last_numLines = (int)numLines;
+    g_last_yOff = yOff;
+
+    s_numLines = (int)numLines;
+    s_yOff = yOff;
+    s_fb = pd_->graphics->getFrame();
+    s_run_start = -1;
+    s_full = g_force_full_repaint;
+    if (s_full) {
+        memset(s_fb, 0xFF, LCD_ROWSIZE * LCD_ROWS);   // paint static margins white once
+        g_force_full_repaint = 0;
+    }
+}
+
+// Called after the displayed (2nd) frame to flush trailing dirty rows.
+static void render_end(void)
+{
+    if (s_run_start >= 0) {
+#ifndef SKIP_ROW_MARK
+        pd_->graphics->markUpdatedRows(s_run_start, s_yOff + s_numLines - 1);
+#endif
+        s_run_start = -1;
+    }
+    if (s_full) {
+#ifndef SKIP_ROW_MARK
+        pd_->graphics->markUpdatedRows(0, LCD_ROWS - 1);   // margins, once
+#endif
+    }
+}
+
+#else  // ---- full-buffer path (TIA fills sFrameBufferA, we dither it here) --
+
+// Render the Stella 160xN framebuffer to the LCD with CrankBoy-style row
+// diffing: only rows that actually changed since last frame are marked dirty.
 static void render_frame(void)
 {
     const uint8_t* fb = stella_framebuffer();
@@ -68,36 +171,48 @@ static void render_frame(void)
     if (numLines > (uint32_t)LCD_ROWS) numLines = LCD_ROWS;
 
     uint8_t* dst = pd_->graphics->getFrame();
-    memset(dst, 0xFF, LCD_ROWSIZE * LCD_ROWS);   // white background
-
-    // Center the rendered scanlines vertically (e.g. 210 lines -> 15 px top
-    // and bottom margins) instead of pinning to the top edge.
     int yOff = ((int)LCD_ROWS - (int)numLines) / 2;
     if (yOff < 0) yOff = 0;
 
+    if ((int)numLines != g_last_numLines || yOff != g_last_yOff)
+        g_force_full_repaint = 1;
+    g_last_numLines = (int)numLines;
+    g_last_yOff = yOff;
+
+    int full = g_force_full_repaint;
+    if (full) {
+        memset(dst, 0xFF, LCD_ROWSIZE * LCD_ROWS);
+        g_force_full_repaint = 0;
+    }
+
+    int run_start = -1;
     for (uint32_t y = 0; y < numLines; ++y)
     {
         const uint8_t* row = fb + (startLine + y) * 160;
-        const uint8_t* by  = kBayer4 + ((y & 3) << 2);
-        const uint8_t t0 = by[0], t1 = by[1], t2 = by[2], t3 = by[3];
-        uint8_t* o = dst + (yOff + (int)y) * LCD_ROWSIZE + DEST_BYTE_X;
-
-        for (int b = 0; b < 40; ++b)
-        {
-            const uint8_t* p = row + (b << 2);
-            uint8_t l0 = lumaLUT[p[0]], l1 = lumaLUT[p[1]];
-            uint8_t l2 = lumaLUT[p[2]], l3 = lumaLUT[p[3]];
-            uint8_t v = 0;
-            if (l0 >= t0) v |= 0x80; if (l0 >= t1) v |= 0x40;
-            if (l1 >= t2) v |= 0x20; if (l1 >= t3) v |= 0x10;
-            if (l2 >= t0) v |= 0x08; if (l2 >= t1) v |= 0x04;
-            if (l3 >= t2) v |= 0x02; if (l3 >= t3) v |= 0x01;
-            o[b] = v;
+        int destRow = yOff + (int)y;
+        uint8_t* o = dst + destRow * LCD_ROWSIZE + DEST_BYTE_X;
+        int changed = dither_row_to(o, row, (int)y);
+        if (full || changed) {
+            if (run_start < 0) run_start = destRow;
+        } else if (run_start >= 0) {
+#ifndef SKIP_ROW_MARK
+            pd_->graphics->markUpdatedRows(run_start, destRow - 1);
+#endif
+            run_start = -1;
         }
     }
-
-    pd_->graphics->markUpdatedRows(0, LCD_ROWS - 1);
+    if (run_start >= 0) {
+#ifndef SKIP_ROW_MARK
+        pd_->graphics->markUpdatedRows(run_start, yOff + (int)numLines - 1);
+#endif
+    }
+    if (full) {
+#ifndef SKIP_ROW_MARK
+        pd_->graphics->markUpdatedRows(0, LCD_ROWS - 1);
+#endif
+    }
 }
+#endif  // STELLA_SCANLINE_DITHER
 
 // --- Screenshot ----------------------------------------------------------
 // After kScreenshotFrame ticks, write the LCD framebuffer to "frame.pbm" in
@@ -173,14 +288,24 @@ static int update_cb(void* userdata)
 
     poll_input();
     // Atari is 60 Hz; the Playdate display runs at 30 Hz. Emulate two Atari
-    // frames per tick so the game runs at correct speed, and only render the
-    // second (we'd throw the first frame's pixels away anyway).
+    // frames per tick so the game runs at correct speed, and only display the
+    // second (the first frame's pixels would be overwritten anyway).
     unsigned int t0 = pd_->system->getCurrentTimeMilliseconds();
+    unsigned int t1, t2;
+#ifdef STELLA_SCANLINE_DITHER
+    // Dither happens inside the TIA scanline hook; only the 2nd frame displays.
+    render_begin();
+    s_emit = 0; stella_run_frame();   // frame 1: emulate only, no dither
+    s_emit = 1; stella_run_frame();   // frame 2: emulate + dither-on-complete
+    render_end();
+    t1 = t2 = pd_->system->getCurrentTimeMilliseconds();
+#else
     stella_run_frame();
     stella_run_frame();
-    unsigned int t1 = pd_->system->getCurrentTimeMilliseconds();
+    t1 = pd_->system->getCurrentTimeMilliseconds();
     render_frame();
-    unsigned int t2 = pd_->system->getCurrentTimeMilliseconds();
+    t2 = pd_->system->getCurrentTimeMilliseconds();
+#endif
     static unsigned int emu_ms = 0, ren_ms = 0;
     emu_ms += (t1 - t0);
     ren_ms += (t2 - t1);
@@ -238,6 +363,7 @@ static void on_menu_controller(void* ud)
     stella_set_paddle_mode(idx);
     if (rom_size) stella_init(rom_buf, rom_size);         // reload with new controller
     paddle_pos = 512.0f;
+    stella_force_full_repaint();                          // resync the row-diff baseline
 }
 
 // On the device the Playdate startup (setup.c) never walks .init_array, so
