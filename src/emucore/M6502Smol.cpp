@@ -94,15 +94,11 @@ static inline __attribute__((always_inline)) uint8_t smol_read_pc(void)
     return v;
 }
 
-// Peek the opcode at PC without consuming a cycle or side effects. PC always
-// points into cart ROM (directPeekBase set), so this never hits a device peek.
-static inline uint8_t smol_peek_nocycle(uint16_t addr)
-{
-    addr &= MY_ADDR_MASK;
-    PageAccess& acc = myPageAccessTable[(addr & MY_ADDR_MASK) >> MY_PAGE_SHIFT];
-    if (acc.directPeekBase) return *(acc.directPeekBase + (addr & MY_PAGE_MASK));
-    return acc.device->peek(addr);
-}
+// Captures the opcode FETCH8'd at the start of cpu_step_custom so the wrapper
+// can read it for cycle accounting WITHOUT doing a second PageAccess lookup.
+// Previously the wrapper smol_peek_nocycle'd the same byte before calling
+// cpu_step, costing ~10 cycles per instruction.
+static uint8_t s_last_opcode;
 
 // --- macros consumed by the included core -----------------------------------
 #define $A   s_A
@@ -205,10 +201,12 @@ void M6502Low::execute_smol(void)
         // taken-branch, indexed-read page-cross) are added here from the
         // standard 6502 base table so total per-instruction timing matches
         // Stella -- otherwise cumulative drift smears positioned sprites.
-        uint8_t op = smol_peek_nocycle((uint16_t)(((uint16_t)s_PCH << 8) | s_PCL));
         smol_taken = 0; smol_rcross = 0;
         uInt32 before = gSystemCycles;
         cpu_step_custom();                           // fetches opcode + operands, executes
+        // Pulled from inside cpu_step_custom -- avoids the duplicate
+        // PageAccess lookup smol_peek_nocycle used to perform.
+        uint8_t op = s_last_opcode;
         uInt32 used = gSystemCycles - before;        // all bus cycles this instruction
         int total = (int)smol_base_cyc[op] + smol_taken + smol_rcross;
         if (total > (int)used) gSystemCycles += (total - (int)used);

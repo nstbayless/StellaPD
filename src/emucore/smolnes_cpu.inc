@@ -51,6 +51,22 @@ static uint8_t mode_table[256]  __attribute__((aligned(4)));
 // init bookkeeping. Saves ~2-3 cycles per instruction in cpu_step_custom.
 static uint16_t mf_per_op_table[256] __attribute__((aligned(4)));
 
+// Single combined LUT for the hot decode path: ONE 32-bit load per
+// instruction in cpu_step_custom yields mf (modeflags) + opcat_raw +
+// reads_operand bit + rare-opcode flag. Replaces 4 separate small-LUT
+// loads. Layout (matches the field accesses in cpu_step_custom):
+//   bits  0..15 : mf (modeflags, same encoding as modeflags_table)
+//   bits 16..22 : opcat (0..36)
+//   bit  23     : 1 if this opcat does NOT read its operand (STA/STX/STY/JMP)
+//   bit  24     : 1 if this opcode is rare/illegal -- bail to cpu_step_smolnes
+//   bits 25..31 : reserved (0)
+// Populated by cpu_custom_init from the three smaller tables above.
+static uint32_t opdecode_table[256] __attribute__((aligned(4)));
+#define OPDEC_MF(x)        ((uint16_t)((x) & 0xFFFFu))
+#define OPDEC_OPCAT(x)     ((uint8_t)(((x) >> 16) & 0x7Fu))
+#define OPDEC_SKIP_READ(x) (((x) >> 23) & 1u)
+#define OPDEC_RARE(x)      (((x) >> 24) & 1u)
+
 #define OPCAT_ORA 1
 #define OPCAT_ASL 2
 #define OPCAT_BIT 4
@@ -193,7 +209,19 @@ static void cpu_custom_init(void) {
 
         opcat_table[opcode]      = opcat;
         mode_table[opcode]       = mode;
-        mf_per_op_table[opcode]  = modeflags_table[mode];
+        uint16_t mf = modeflags_table[mode];
+        mf_per_op_table[opcode]  = mf;
+
+        // Pack everything the cpu_step_custom hot path needs from a single
+        // 32-bit slot. Note opcat already has bit 7 set for skip-read; we
+        // shift it into bit 23 of the combined word.
+        uint32_t skip_read = (opcat & 0x80) ? 1u : 0u;
+        uint32_t rare      = rare_opcode_byte_table[opcode] ? 1u : 0u;
+        opdecode_table[opcode] =
+            (uint32_t)mf
+          | ((uint32_t)(opcat & 0x7F) << 16)
+          | (skip_read << 23)
+          | (rare << 24);
     }
 }
 
@@ -225,27 +253,22 @@ static unsigned cpu_step_custom(void) {
     }
 
     uint8_t opcode = FETCH8();
+    extern uint8_t s_last_opcode;
+    s_last_opcode = opcode;   // expose for the wrapper's cycle accounting
+
+    // Single 32-bit load yields rare-flag, opcat, skip-read bit, and mf
+    // (modeflags). Replaces 4 separate small-LUT loads.
+    uint32_t dec = opdecode_table[opcode];
 
     // ----- Rare-opcode bail-out (illegal / unsupported) ----------------------
-    // Use a flat 256-byte LUT (rare_opcode_byte_table) instead of the 8-word
-    // bit table -- compiles to a single `ldrb` + `cbnz`, ~3 cycles, vs the
-    // bit-pack approach's ~7 cycles (shift + LUT-word load + mask + shift +
-    // and + branch). The byte table is populated at init from the bit table.
-    if (unlikely(rare_opcode_byte_table[opcode])) {
+    if (unlikely(OPDEC_RARE(dec))) {
         if ($PCL-- == 0) $PCH--;   // smolnes refetches the opcode byte
         return cpu_step_smolnes();
     }
-
-    // ----- Decode opcat + mf (LUTs) -----------------------------------------
-    // Pre-baked tables populated by cpu_custom_init replace the ~10-20-cycle
-    // branchy decode that used to run per-instruction. High bit of opcat
-    // entry encodes "skip operand read" (STA/STX/STY/JMP). mf_per_op_table
-    // folds the old mode_table -> modeflags_table chain into a single load.
-    uint8_t  opcat_raw = opcat_table[opcode];
-    uint8_t  opcat     = (uint8_t)(opcat_raw & 0x7F);
+    uint8_t opcat = OPDEC_OPCAT(dec);
 
     // ----- Resolve operand from mode ----------------------------------------
-    uint16_t mf      = mf_per_op_table[opcode];
+    uint16_t mf      = OPDEC_MF(dec);
     cyc += (mf >> MF_CYCLES_SHIFT);
     uint8_t  mfc     = mf & MF_CATEGORY_BITS;
     bool     use_x   = !!(mf & MF_USE_X);
@@ -253,9 +276,8 @@ static unsigned cpu_step_custom(void) {
     uint8_t  operand = 0;
     uint16_t addr    = 0;
     int      cross   = 0;
-    // bit 7 of opcat_raw is "skip operand read" (STA/STX/STY/JMP). Compiles
-    // to a single 'tst opcat_raw, #0x80' on M7.
-    bool     reads_operand = !(opcat_raw & 0x80);
+    // Bit 23 of dec is "skip operand read" (STA/STX/STY/JMP).
+    bool     reads_operand = !OPDEC_SKIP_READ(dec);
 
     switch (mfc) {
     case MFC_NONE:
@@ -328,7 +350,9 @@ static unsigned cpu_step_custom(void) {
         // 6507 decimal mode (Atari uses it for scores). Match Stella's ADC-BCD
         // exactly: Z from the binary result, N from the BCD result, C if the
         // decimal sum exceeds 99, V from the BCD sign quirk.
-        if ($D) {
+        // Decimal mode is set with SED only around score math -- rare relative
+        // to total ADC/SBC count -- so the branch is unlikely().
+        if (unlikely($D)) {
             uint8_t oldA = $A;
             int dsum = smol_bcd0[$A] + smol_bcd0[operand] + $C;
             $Z = ((uint8_t)sum == 0);
@@ -351,7 +375,7 @@ static unsigned cpu_step_custom(void) {
 #ifdef SMOLNES_BCD
         // 6507 decimal-mode SBC, matching Stella's SBC-BCD exactly (uses the
         // *original* operand, not the inverted one; Z/N from the BCD result).
-        if ($D) {
+        if (unlikely($D)) {
             uint8_t oldA = $A;
             uint8_t oldC = $C;
             int diff = smol_bcd0[$A] - smol_bcd0[operand] - (oldC ? 0 : 1);
