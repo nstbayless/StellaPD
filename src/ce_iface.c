@@ -72,6 +72,18 @@ const char* ce_get_system_name_from_slug(const char* system_slug)
     return NULL;
 }
 
+// Provide our own tiny strcmp so the build doesn't pull newlib's 736-byte
+// optimised one (pdll_getsymbol_impl above and ce_get_system_name_from_slug
+// are the only callers). Newlib's strcmp lives inside libc.a, so the linker
+// picks ours over the archive's version. That ~700-byte saving keeps
+// stella_emit_scanline / M6532::peek / cpu_set_nz in the I-cache hot path
+// (worth ~1 fps on the device).
+int strcmp(const char* a, const char* b)
+{
+    while (*a && *a == *b) { ++a; ++b; }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
 bool ce_start_rom(uint8_t* rom, size_t size, const char* system_slug, const char* rom_basename)
 {
     (void)system_slug; (void)rom_basename;
