@@ -20,6 +20,7 @@ VPATH += src/emucore
 # C sources
 SRC = src/main.c
 SRC += src/dtcm.c
+SRC += src/ce_iface.c
 
 # C++ sources (emucore)
 CXXSRC = \
@@ -50,7 +51,7 @@ CXXSRC = \
 	src/emucore/TIA.cpp \
 	src/emucore/TIASound.cpp
 
-UINCDIR = src src/emucore
+UINCDIR = src src/emucore libs/pdll libs/libcrankemu
 
 # PLAYDATE_STACK_SIZE (0x2700, matching CrankBoy) is the *entire* DTCM region
 # safely usable below the live stack frame -- do not exceed it. Only small hot
@@ -142,12 +143,29 @@ $(OBJDIR)/%.o : %.cpp | MKOBJDIR MKDEPDIR
 $(OBJDIR)/pdex.elf: $(OBJS) $(CXX_OBJS) $(LDSCRIPT)
 	$(CXX_DEVICE) $(OBJS) $(CXX_OBJS) $(LDFLAGS) $(LIBS) -o $@
 
-# Override the simulator rule: g++ compiles cpp + links
-$(OBJDIR)/pdex.${DYLIB_EXT}: $(SRC) $(CXXSRC) | MKOBJDIR
-	$(CXX_NATIVE) -g $(DYLIB_FLAGS) -lm -DTARGET_SIMULATOR=1 -DTARGET_EXTENSION=1 $(SMOL_DEFS) $(SCANLINE_DEFS) \
-		-fno-exceptions -fno-rtti -fno-threadsafe-statics \
-		-x c $(SRC) -x c++ $(CXXSRC) \
-		$(INCDIR) -o $(OBJDIR)/pdex.${DYLIB_EXT}
+# Override the simulator rule. We compile each .c with gcc and each .cpp with
+# g++ as separate objects, then link with g++. Previously we let g++ drive a
+# single command with `-x c .. -x c++ ..`, but g++ silently compiled the .c
+# files as C++ anyway, which mangled `eventHandler` and broke pdll's dlopen
+# (the libcrankemu loader couldn't resolve _Z12eventHandlerP...).
+SIM_OBJDIR = $(OBJDIR)/sim
+# common.mk has already appended setup.c to $(SRC), so SIM_C_OBJS covers it too.
+SIM_C_OBJS   = $(addprefix $(SIM_OBJDIR)/, $(SRC:.c=.o))
+SIM_CXX_OBJS = $(addprefix $(SIM_OBJDIR)/, $(CXXSRC:.cpp=.o))
+SIM_CFLAGS   = -g -fPIC -DTARGET_SIMULATOR=1 -DTARGET_EXTENSION=1 $(SMOL_DEFS) $(SCANLINE_DEFS) \
+               -I . -I $(SDK)/C_API -I src -I src/emucore -I libs/pdll -I libs/libcrankemu
+SIM_CXXFLAGS = $(SIM_CFLAGS) -fno-exceptions -fno-rtti -fno-threadsafe-statics
+
+$(SIM_OBJDIR)/%.o: %.c | MKOBJDIR
+	@mkdir -p $(dir $@)
+	gcc -c $(SIM_CFLAGS) $< -o $@
+
+$(SIM_OBJDIR)/%.o: %.cpp | MKOBJDIR
+	@mkdir -p $(dir $@)
+	g++ -c $(SIM_CXXFLAGS) $< -o $@
+
+$(OBJDIR)/pdex.${DYLIB_EXT}: $(SIM_C_OBJS) $(SIM_CXX_OBJS)
+	g++ -g -shared -fPIC -lm $(SIM_C_OBJS) $(SIM_CXX_OBJS) -o $@
 
 # ---- Native headless test harness -----------------------------------------
 # Compiles the same emucore + stella_glue into a standalone host binary that

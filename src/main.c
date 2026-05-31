@@ -31,7 +31,11 @@ extern void          stella_set_dtcm_alloc(void* (*fn)(size_t));
 extern void          stella_alloc_buffers(void);
 extern const char*   stella_cart_name(void);
 
-static PlaydateAPI* pd_;
+// pd_ and the button-state hook are non-static so the libcrankemu adapter
+// (src/ce_iface.c) can share them when StellaPD is loaded as a dynamic
+// library (pdll) and driven through the ce_* interface.
+PlaydateAPI* pd_ = NULL;
+void (*stellapd_get_buttons_hook)(PDButtons*, PDButtons*, PDButtons*) = NULL;
 static uint8_t      rom_buf[512 * 1024];
 static uint32_t     rom_size = 0;
 static float        paddle_pos = 512.0f;   // 0..1023, persists between ticks
@@ -149,7 +153,7 @@ static void render_begin(void)
     s_run_start = -1;
     s_full = g_force_full_repaint;
     if (s_full) {
-        memset(s_fb, 0xFF, LCD_ROWSIZE * LCD_ROWS);   // paint static margins white once
+        memset(s_fb, 0x00, LCD_ROWSIZE * LCD_ROWS);   // paint static margins black once
         g_force_full_repaint = 0;
     }
 }
@@ -192,7 +196,7 @@ static void render_frame(void)
 
     int full = g_force_full_repaint;
     if (full) {
-        memset(dst, 0xFF, LCD_ROWSIZE * LCD_ROWS);
+        memset(dst, 0x00, LCD_ROWSIZE * LCD_ROWS);
         g_force_full_repaint = 0;
     }
 
@@ -256,8 +260,11 @@ static int sResetPress  = 0;
 
 static void poll_input(void)
 {
-    PDButtons cur;
-    pd_->system->getButtonState(&cur, NULL, NULL);
+    PDButtons cur, pressed, released;
+    if (stellapd_get_buttons_hook)
+        stellapd_get_buttons_hook(&cur, &pressed, &released);
+    else
+        pd_->system->getButtonState(&cur, &pressed, &released);
 
     uint8_t fire  = (cur & (kButtonA | kButtonB)) ? 1 : 0;
 
@@ -454,10 +461,14 @@ static void run_static_ctors(void)
 static void run_static_ctors(void) {}
 #endif
 
-#ifdef _WINDLL
-__declspec(dllexport)
-#endif
-int eventHandler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg)
+// Single-tick entry point so the libcrankemu adapter (ce_update) can drive
+// the same update body as the standalone setUpdateCallback path.
+void stellapd_run_tick(void) { (void)update_cb(NULL); }
+
+// Common event handling. When `dynamic` is non-zero we skip the
+// standalone-only setup (rom loading, refresh rate, menu items, update
+// callback) — under libcrankemu the frontend owns those.
+int stellapd_event_handler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg, int dynamic)
 {
     (void)arg;
     if (event == kEventInit)
@@ -470,6 +481,7 @@ int eventHandler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg)
         // so stella_alloc_buffers() uses static RAM. The infra stays for a
         // future ITCM/DTCM pass on smaller hot state.
         stella_alloc_buffers();
+        if (dynamic) return 0;
         if (!load_rom(pd)) return 0;
         pd->display->setRefreshRate(0);    // ASAP: system clocks update_cb faster
                                            // than 30Hz when dirty rows are few
@@ -485,3 +497,8 @@ int eventHandler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg)
     }
     return 0;
 }
+
+// The exported `eventHandler` lives in src/ce_iface.c; that TU also owns the
+// PDLL export table so a libcrankemu frontend can pdll-load us. In a
+// standalone launch the pdll detection there is a no-op and the call falls
+// through to stellapd_event_handler() with dynamic=0.
