@@ -64,8 +64,12 @@ UDEFS = $(UDEFS_EXTRA) -DSTELLA_PLAYDATE=1 -DDTCM_ALLOC -DPLAYDATE_STACK_SIZE=0x
 	-Wno-write-strings -Wno-narrowing -Wno-multichar \
 	-falign-loops=32 -fprefetch-loop-arrays
 
-# Optional tiny smolnes-derived CPU core. Enable with: make SMOLNES_CPU=1
-# (also turns on 6507 decimal/BCD mode, which Atari score counters need).
+# Tiny smolnes-derived CPU core (default on -- it's roughly 1.5x faster than
+# M6502Low::execute_4K on the device, the difference between ~19 fps and
+# ~30 fps for typical 4K carts). SMOLNES_BCD enables 6507 decimal mode so
+# Atari score counters render correctly. Set SMOLNES_CPU=0 to fall back to
+# the reference C++ core.
+SMOLNES_CPU ?= 1
 SMOL_DEFS =
 ifeq ($(SMOLNES_CPU),1)
 SMOL_DEFS = -DUSE_SMOLNES_CPU -DSMOLNES_BCD
