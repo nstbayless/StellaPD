@@ -26,6 +26,12 @@ typedef u32 uint32;
 // Section attributes are no-ops on Playdate -- we let the linker map all hot
 // code into the standard text section. The Dirty C Secrets writeup notes that
 // careful linker placement matters more than DTCM/ITCM tricks for Playdate.
+//
+// (Tried pinning ITCM_CODE-tagged functions into .text.stellapd_hot.itcm so
+// the catch-all in link_map.ld would gather them next to the named hot block.
+// It pushed ~4KB of cart/M6532 code into the I-cache footprint and cost ~5fps
+// in the SMOLNES build -- the cache thrash outweighed any layout-stability
+// win. Reverting; the load-bearing pins are the named hot sections.)
 #ifndef ITCM_CODE
 #define ITCM_CODE
 #endif

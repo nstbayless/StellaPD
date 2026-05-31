@@ -123,15 +123,37 @@ static ce_preference_t* s_prefs[] = { &s_pref_control, NULL };
 ce_preference_t** ce_get_preferences(void) { return s_prefs; }
 
 // --- rom info --------------------------------------------------------------
+// Manual string builder -- using snprintf here pulls the full printf chain
+// (_vfiprintf_r, sprintf_aux, _flsbuf, ...) into the device .text, which adds
+// ~16KB between memset and our hot helpers and pushes stella_emit_scanline /
+// M6532::peek out of the I-cache footprint, costing ~4 fps. Stay newlib-free.
 static char s_rom_info[128];
+static char* sri_append(char* p, char* end, const char* s)
+{
+    while (*s && p < end - 1) *p++ = *s++;
+    return p;
+}
+static char* sri_append_uint(char* p, char* end, size_t v)
+{
+    char tmp[20];
+    int n = 0;
+    if (v == 0) tmp[n++] = '0';
+    else while (v) { tmp[n++] = (char)('0' + v % 10); v /= 10; }
+    while (n-- && p < end - 1) *p++ = tmp[n];
+    return p;
+}
 const char* get_rom_info(const uint8_t* rom, size_t size)
 {
     (void)rom;
     const char* name = stella_cart_name();
     if (!name) name = "";
-    snprintf(s_rom_info, sizeof(s_rom_info),
-             "System:\tAtari 2600\nSize:\t%zu\nCart:\t%s",
-             size, name);
+    char* p = s_rom_info;
+    char* end = s_rom_info + sizeof(s_rom_info);
+    p = sri_append(p, end, "System:\tAtari 2600\nSize:\t");
+    p = sri_append_uint(p, end, size);
+    p = sri_append(p, end, "\nCart:\t");
+    p = sri_append(p, end, name);
+    *p = '\0';
     return s_rom_info;
 }
 
