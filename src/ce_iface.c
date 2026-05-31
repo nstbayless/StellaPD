@@ -108,31 +108,39 @@ bool   ce_load(const uint8_t* b, size_t s)               { (void)b; (void)s; ret
 static const char* pref_control_name(ce_preference_t* self)        { (void)self; return "Control"; }
 static const char* pref_control_description(ce_preference_t* self) { (void)self; return "Input device emulated for the Atari controller port."; }
 static const char* const pref_control_values[] = { "Joystick", "Paddle", NULL };
-static int  pref_control_get(ce_preference_t* self)                 { (void)self; return stella_get_paddle_mode() ? 1 : 0; }
-static void pref_control_set(ce_preference_t* self, unsigned v)
+static unsigned pref_control_get(ce_preference_t* self) { (void)self; return stella_get_paddle_mode() ? 1 : 0; }
+static bool pref_control_set(ce_preference_t* self, unsigned v)
 {
     (void)self;
-    stella_set_paddle_mode(v ? 1 : 0);
+    if (v > 1) return false;
+    stella_set_paddle_mode((int)v);
     stella_force_full_repaint();
+    return true;
 }
+
+// Changing Control rebuilds the Console (controller objects are chosen at
+// construction time), so any change needs a restart to take effect cleanly.
+static uint32_t pref_control_flags(ce_preference_t* self) { (void)self; return CE_PREF_REQUIRES_RESTART; }
 
 static char s_pref_control_id[] = "control";
 static ce_preference_t s_pref_control = {
     .ud           = NULL,
-    .is_category  = 0,
+    .type         = CE_PREFERENCE_STANDARD,
     .id           = s_pref_control_id,
     .name         = pref_control_name,
     .description  = pref_control_description,
     .values       = pref_control_values,
     .get          = pref_control_get,
     .set          = pref_control_set,
-    .locked       = NULL,
-    .hide         = NULL,
-    .requires_restart = true,   // changing control rebuilds the console
+    .flags        = pref_control_flags,
 };
 
 static ce_preference_t* s_prefs[] = { &s_pref_control, NULL };
-ce_preference_t** ce_get_preferences(void) { return s_prefs; }
+ce_preference_t** ce_get_preferences(uint8_t* rom, size_t size)
+{
+    (void)rom; (void)size;
+    return s_prefs;
+}
 
 // --- rom info --------------------------------------------------------------
 // Manual string builder -- using snprintf here pulls the full printf chain
