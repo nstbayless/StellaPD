@@ -113,6 +113,9 @@ bool ce_start_rom(uint8_t* rom, size_t size, const char* system_slug, const char
 void ce_end_rom(void);
 void ce_update(void);
 
+// frontend informs core that playdate frame buffer has been modified and needs a refresh.
+void ce_full_redraw(void);
+
 // save data (all optional)
 bool ce_is_save_dirty(void); // return true if saving would be warranted
 void ce_save(uint8_t* buffer, size_t size);

@@ -106,6 +106,13 @@ void ce_end_rom(void) { /* nothing to free — stella core owns its state */ }
 
 void ce_update(void) { stellapd_run_tick(); }
 
+// The frontend scribbled over the framebuffer (showed a modal etc.) and
+// wants us to repaint our entire image on the next tick. We just flip the
+// existing force-full-repaint flag -- the next render_begin() / render_end()
+// fills the margins, dithers every scanline, and markUpdatedRows the whole
+// LCD.
+void ce_full_redraw(void) { stella_force_full_repaint(); }
+
 // Save data: stella core doesn't currently surface SRAM/battery state through
 // this TU, so report none.
 bool   ce_is_save_dirty(void)                            { return false; }
@@ -344,6 +351,7 @@ PDLL_EXPORT(
     ce_start_rom,
     ce_end_rom,
     ce_update,
+    ce_full_redraw,
     ce_is_save_dirty,
     ce_get_rom_save_size,
     ce_save,
