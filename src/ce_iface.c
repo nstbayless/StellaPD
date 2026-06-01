@@ -93,7 +93,7 @@ int strcmp(const char* a, const char* b)
     return (unsigned char)*a - (unsigned char)*b;
 }
 
-bool ce_start_rom(uint8_t* rom, size_t size, const char* system_slug, const char* rom_basename)
+bool ce_load_rom(uint8_t* rom, size_t size, const char* system_slug, const char* rom_basename)
 {
     (void)system_slug; (void)rom_basename;
     if (!rom || size == 0) return false;
@@ -102,7 +102,16 @@ bool ce_start_rom(uint8_t* rom, size_t size, const char* system_slug, const char
     return true;
 }
 
-void ce_end_rom(void) { /* nothing to free — stella core owns its state */ }
+// Stella holds onto the Console object across ce_play / ce_stop cycles --
+// ce_unload_rom would normally drop it, but our existing code reuses the
+// same Console for the next ce_load_rom; nothing to free here.
+void ce_unload_rom(void) { }
+
+// play/stop are gating events for emulation. For StellaPD the Console
+// is always ready once load_rom has run, and ticks come in from
+// ce_update, so the play/stop pair is currently a no-op.
+bool ce_play(void) { return true; }
+void ce_stop(void) { }
 
 void ce_update(void) { stellapd_run_tick(); }
 
@@ -347,9 +356,8 @@ static ce_preference_t* s_prefs[] = {
     &s_pref_rdiff,
     NULL,
 };
-ce_preference_t** ce_get_preferences(uint8_t* rom, size_t size)
+ce_preference_t** ce_get_preferences(void)
 {
-    (void)rom; (void)size;
     return s_prefs;
 }
 
@@ -399,8 +407,10 @@ PDLL_EXPORT(
     ce_core_version,
     ce_get_system_slugs,
     ce_get_system_name_from_slug,
-    ce_start_rom,
-    ce_end_rom,
+    ce_load_rom,
+    ce_unload_rom,
+    ce_play,
+    ce_stop,
     ce_update,
     ce_full_redraw,
     ce_is_save_dirty,
