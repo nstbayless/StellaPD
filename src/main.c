@@ -480,6 +480,16 @@ static void on_menu_input(void* ud)
     // in flight, the user can't shorten it from here. That's fine.
 }
 
+// (Re)add the "Input" menu item. Used by both the standalone init path
+// (one-time) and the dynamic-mode kEventLock path (the libcrankemu
+// frontend wipes all menu items on every pause-menu refresh, so we have to
+// re-add each time it asks us to).
+static void install_input_menu_item(void)
+{
+    sInputMenu = pd_->system->addOptionsMenuItem("Input", k_input_opts, 3,
+                                                  on_menu_input, NULL);
+}
+
 // Called from poll_input each tick: once both holds have drained, snap the
 // menu UI back to "None" so a fresh selection of Select/Reset re-fires.
 void stellapd_input_menu_idle_if_done(void)
@@ -536,6 +546,19 @@ void stellapd_run_tick(void) { (void)update_cb(NULL); }
 int stellapd_event_handler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg, int dynamic)
 {
     (void)arg;
+
+    // libcrankemu menu-setup hook: the frontend has just removeAllMenuItems
+    // and added its own entries; we get the remaining slot. In standalone
+    // mode this event also fires on real device-lock; harmlessly re-add
+    // (the only side effect is a duplicate that the OS replaces on the
+    // next pause-menu open). pd_ is set by an earlier kEventInit either
+    // way.
+    if (event == kEventLock && dynamic && pd_)
+    {
+        install_input_menu_item();
+        return 0;
+    }
+
     if (event == kEventInit)
     {
         pd_ = pd;
@@ -557,12 +580,9 @@ int stellapd_event_handler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg, i
                                            // (per SDK: refresh=0 -> indeterminate
                                            // higher rate). Matches CrankBoy.
         pd->system->setAutoLockDisabled(1); // keep the device awake during dev/testing
-        // Per libcrankemu spec ("emulator should only set up to 1 menu item"),
-        // we own exactly one OS menu slot in either launch mode. Use it for
-        // Select/Reset pulses; the Control / TV Type / L Diff / R Diff /
-        // Backdrop / NTSC-PAL knobs live as libcrankemu preferences instead.
-        sInputMenu = pd->system->addOptionsMenuItem("Input", k_input_opts, 3,
-                                                    on_menu_input, NULL);
+        // Standalone .pdx launch: add the menu item once -- it persists for
+        // the program lifetime (no frontend refreshMenu nukes it).
+        install_input_menu_item();
         // Push initial switch defaults (B&W, B Novice, B Novice) into the
         // running Console so SWCHB starts with the intended bits even
         // before the user opens preferences. Matches the ce_iface defaults.
