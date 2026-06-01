@@ -10,6 +10,11 @@
 
 #define CE_MODAL_NO_CANCEL 1 /* user cannot press (B) to cancel the modal */
 
+/* Synthetic event the frontend fires on the core's eventHandler to tell it
+ * "register your one OS pause-menu item now". Sits well above the SDK's
+ * PDSystemEvent enum so it can't collide with future Playdate-side events. */
+#define kEventMenu ((PDSystemEvent)0x1000)
+
 #define CE_PREF_LOCKED 1 /* greyed-out; user should not be able to alter setting */
 /* reserved */
 #define CE_PREF_ALWAYS_GLOBAL 4 /* pref always shared between games */
@@ -135,7 +140,7 @@ ce_preference_t** ce_get_preferences(uint8_t* rom, size_t size);
 
 // note: eventHandler will receive normal events.
 // however, eventHandler should NOT set the playdate update callback.
-// in kEventLock, emulator should only set up to 1 menu item, as the others
+// in kEventMenu, emulator should only set up to 1 menu item, as the others
 // may be used by the frontend (e.g. settings, return to library)
 
 #endif /* LIBCRANKEMU_H_ */

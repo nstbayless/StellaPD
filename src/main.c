@@ -13,6 +13,7 @@
 #include <string.h>
 #include <stddef.h>
 #include "dtcm.h"
+#include "libcrankemu.h"  // for kEventMenu
 
 // --- C interface to the C++ core ------------------------------------------
 extern int           stella_init(const uint8_t* image, uint32_t size);
@@ -548,12 +549,10 @@ int stellapd_event_handler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg, i
     (void)arg;
 
     // libcrankemu menu-setup hook: the frontend has just removeAllMenuItems
-    // and added its own entries; we get the remaining slot. In standalone
-    // mode this event also fires on real device-lock; harmlessly re-add
-    // (the only side effect is a duplicate that the OS replaces on the
-    // next pause-menu open). pd_ is set by an earlier kEventInit either
-    // way.
-    if (event == kEventLock && dynamic && pd_)
+    // and added its own entries; we get the remaining slot. kEventMenu is a
+    // libcrankemu synthetic event (above the SDK enum range), so it never
+    // collides with real device events. pd_ is set by an earlier kEventInit.
+    if (event == kEventMenu && dynamic && pd_)
     {
         install_input_menu_item();
         return 0;
