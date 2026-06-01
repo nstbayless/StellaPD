@@ -36,6 +36,9 @@ extern void          stella_set_control_mode(int mode);
 extern int           stella_get_control_mode(void);
 extern void          stella_set_tv_type(int pal);
 extern int           stella_get_tv_type(void);
+extern void          stella_set_color_mode(int color);
+extern void          stella_set_left_difficulty(int diff_a);
+extern void          stella_set_right_difficulty(int diff_a);
 extern void          stellapd_set_backdrop_white(int white);
 extern int           stellapd_get_backdrop_white(void);
 extern void          stella_set_dtcm_alloc(void* (*fn)(size_t));
@@ -196,8 +199,95 @@ static ce_preference_t s_pref_tv = {
     .flags        = pref_tv_flags,
 };
 
+// --- Switches category: stateful console switches ------------------------
+// On a real Atari 2600 these are physical toggle switches on the console
+// front. We surface them as libcrankemu prefs (under a "Switches" category)
+// rather than OS-menu items so they survive across game runs and the single
+// OS-menu slot stays free for the momentary Select/Reset pulses.
+//
+// Defaults match the bits set in Switches::Switches (mySwitches = 0x0F |
+// 0x08 = 0x0F): Color, B Novice, B Novice.
+
+static const char* pref_switches_cat_name(ce_preference_t* self) { (void)self; return "Switches"; }
+static char s_pref_switches_cat_id[] = "switches";
+static ce_preference_t s_pref_switches_cat = {
+    .ud           = NULL,
+    .type         = CE_PREFERENCE_CATEGORY,
+    .id           = s_pref_switches_cat_id,
+    .name         = pref_switches_cat_name,
+};
+
+// Currently-applied switch state, mirrored here so get() can answer without
+// asking the Console (which may not exist yet during ce_set_frontend).
+static int s_color_val  = 1;  // 1 = Color, 0 = B&W
+static int s_ldiff_val  = 0;  // 0 = B (Novice), 1 = A (Pro)
+static int s_rdiff_val  = 0;
+
+static const char* const pref_color_values[] = { "B&W", "Color", NULL };
+static const char* pref_color_name(ce_preference_t* self)        { (void)self; return "TV Type"; }
+static const char* pref_color_description(ce_preference_t* self) { (void)self; return "The B&W vs Color toggle switch on the front of the Atari."; }
+static unsigned pref_color_get(ce_preference_t* self) { (void)self; return s_color_val ? 1u : 0u; }
+static bool pref_color_set(ce_preference_t* self, unsigned v)
+{
+    (void)self;
+    if (v > 1) return false;
+    s_color_val = (int)v;
+    stella_set_color_mode(s_color_val);
+    return true;
+}
+static char s_pref_color_id[] = "color_mode";
+static ce_preference_t s_pref_color = {
+    .type = CE_PREFERENCE_STANDARD, .id = s_pref_color_id,
+    .name = pref_color_name, .description = pref_color_description,
+    .values = pref_color_values, .get = pref_color_get, .set = pref_color_set,
+};
+
+static const char* const pref_diff_values[] = { "B (Novice)", "A (Pro)", NULL };
+static const char* pref_ldiff_name(ce_preference_t* self)        { (void)self; return "Left Difficulty"; }
+static const char* pref_ldiff_description(ce_preference_t* self) { (void)self; return "Player 1 difficulty switch. A is the harder \"Pro\" setting."; }
+static unsigned pref_ldiff_get(ce_preference_t* self) { (void)self; return s_ldiff_val ? 1u : 0u; }
+static bool pref_ldiff_set(ce_preference_t* self, unsigned v)
+{
+    (void)self;
+    if (v > 1) return false;
+    s_ldiff_val = (int)v;
+    stella_set_left_difficulty(s_ldiff_val);
+    return true;
+}
+static char s_pref_ldiff_id[] = "left_difficulty";
+static ce_preference_t s_pref_ldiff = {
+    .type = CE_PREFERENCE_STANDARD, .id = s_pref_ldiff_id,
+    .name = pref_ldiff_name, .description = pref_ldiff_description,
+    .values = pref_diff_values, .get = pref_ldiff_get, .set = pref_ldiff_set,
+};
+
+static const char* pref_rdiff_name(ce_preference_t* self)        { (void)self; return "Right Difficulty"; }
+static const char* pref_rdiff_description(ce_preference_t* self) { (void)self; return "Player 2 difficulty switch. A is the harder \"Pro\" setting."; }
+static unsigned pref_rdiff_get(ce_preference_t* self) { (void)self; return s_rdiff_val ? 1u : 0u; }
+static bool pref_rdiff_set(ce_preference_t* self, unsigned v)
+{
+    (void)self;
+    if (v > 1) return false;
+    s_rdiff_val = (int)v;
+    stella_set_right_difficulty(s_rdiff_val);
+    return true;
+}
+static char s_pref_rdiff_id[] = "right_difficulty";
+static ce_preference_t s_pref_rdiff = {
+    .type = CE_PREFERENCE_STANDARD, .id = s_pref_rdiff_id,
+    .name = pref_rdiff_name, .description = pref_rdiff_description,
+    .values = pref_diff_values, .get = pref_rdiff_get, .set = pref_rdiff_set,
+};
+
 static ce_preference_t* s_prefs[] = {
-    &s_pref_control, &s_pref_backdrop, &s_pref_tv, NULL,
+    &s_pref_control,
+    &s_pref_backdrop,
+    &s_pref_tv,
+    &s_pref_switches_cat,
+    &s_pref_color,
+    &s_pref_ldiff,
+    &s_pref_rdiff,
+    NULL,
 };
 ce_preference_t** ce_get_preferences(uint8_t* rom, size_t size)
 {

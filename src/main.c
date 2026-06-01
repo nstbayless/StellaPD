@@ -278,8 +278,14 @@ static void save_screenshot(void)
 }
 
 // --- Input ---------------------------------------------------------------
-static int sSelectPress = 0;
-static int sResetPress  = 0;
+// Console-switch pulse state. Selecting "Select" or "Reset" from the single
+// "Input" OS menu item holds that switch down for kInputHoldFrames frames,
+// then auto-releases (and resets the menu to "None") so the user can pulse
+// it again. ~12 frames @ 30 fps is ~0.4s of held-down time, plenty for the
+// emulated cart's M6532 poll to see the bit transition.
+#define kInputHoldFrames 12
+static int sSelectHold = 0;  // frames remaining where Select is "pressed"
+static int sResetHold  = 0;  // frames remaining where Reset is "pressed"
 
 static void poll_input(void)
 {
@@ -290,6 +296,9 @@ static void poll_input(void)
         pd_->system->getButtonState(&cur, &pressed, &released);
 
     uint8_t fire  = (cur & (kButtonA | kButtonB)) ? 1 : 0;
+
+    uint8_t sel_now = (sSelectHold > 0) ? 1 : 0;
+    uint8_t rst_now = (sResetHold  > 0) ? 1 : 0;
 
     if (stella_get_paddle_mode()) {
         // Crank drives the paddle. If docked, fall back to Left/Right d-pad
@@ -304,20 +313,22 @@ static void poll_input(void)
         if (paddle_pos < 0.0f)    paddle_pos = 0.0f;
         if (paddle_pos > 1023.0f) paddle_pos = 1023.0f;
         stella_set_paddle((int)paddle_pos, fire);
-        // Still allow select/reset.
-        stella_set_input(0, 0, 0, 0, 0, sSelectPress ? 1 : 0, sResetPress ? 1 : 0);
+        // Still allow select/reset pulses.
+        stella_set_input(0, 0, 0, 0, 0, sel_now, rst_now);
     } else {
         uint8_t up    = (cur & kButtonUp)    ? 1 : 0;
         uint8_t down  = (cur & kButtonDown)  ? 1 : 0;
         uint8_t left  = (cur & kButtonLeft)  ? 1 : 0;
         uint8_t right = (cur & kButtonRight) ? 1 : 0;
-        stella_set_input(up, down, left, right, fire,
-                         sSelectPress ? 1 : 0,
-                         sResetPress  ? 1 : 0);
+        stella_set_input(up, down, left, right, fire, sel_now, rst_now);
     }
-    // Single-shot select/reset are nudged by the system menu callbacks.
-    sSelectPress = 0;
-    sResetPress  = 0;
+
+    // Tick down the held-switch counters. When a hold finishes, reset the
+    // menu UI to "None" so the user can re-trigger the same switch.
+    if (sSelectHold > 0) --sSelectHold;
+    if (sResetHold  > 0) --sResetHold;
+    extern void stellapd_input_menu_idle_if_done(void);
+    stellapd_input_menu_idle_if_done();
 }
 
 // --- Frame tick ----------------------------------------------------------
@@ -451,30 +462,33 @@ static int load_rom(PlaydateAPI* pd)
     return 0;
 }
 
-static void on_menu_reset(void* ud) { (void)ud; sResetPress = 1; }
-static void on_menu_select(void* ud) { (void)ud; sSelectPress = 1; }
+// Single "Input" OS-menu item -- one slot per libcrankemu spec ("the
+// emulator should only set up to 1 menu item"). Values: 0=None, 1=Select,
+// 2=Reset. Selecting one of the latter holds that console switch down for
+// kInputHoldFrames frames, then the poll_input tick auto-resets the menu
+// back to "None" so the user can re-trigger.
+static PDMenuItem* sInputMenu = NULL;
+static const char* k_input_opts[] = { "None", "Select", "Reset" };
 
-// Console-switch menu items (stateful toggles on a real Atari).
-static PDMenuItem* sColorMenu = NULL;       // "Color" / "B&W"
-static PDMenuItem* sLDiffMenu = NULL;       // Left diff (P0): A=Pro / B=Novice
-static PDMenuItem* sRDiffMenu = NULL;       // Right diff (P1)
-static int sColorVal = 1;                   // 1 = Color, 0 = B&W
-static int sLDiffVal = 0;                   // 0 = B Novice, 1 = A Pro
-static int sRDiffVal = 0;
-static void on_menu_color(void* ud) {
+static void on_menu_input(void* ud)
+{
     (void)ud;
-    sColorVal = pd_->system->getMenuItemValue(sColorMenu) ? 1 : 0;
-    stella_set_color_mode(sColorVal);
+    int idx = pd_->system->getMenuItemValue(sInputMenu);
+    if (idx == 1)      sSelectHold = kInputHoldFrames;
+    else if (idx == 2) sResetHold  = kInputHoldFrames;
+    // idx == 0 (None) just leaves the holds alone; if a pulse is already
+    // in flight, the user can't shorten it from here. That's fine.
 }
-static void on_menu_ldiff(void* ud) {
-    (void)ud;
-    sLDiffVal = pd_->system->getMenuItemValue(sLDiffMenu) ? 1 : 0;
-    stella_set_left_difficulty(sLDiffVal);
-}
-static void on_menu_rdiff(void* ud) {
-    (void)ud;
-    sRDiffVal = pd_->system->getMenuItemValue(sRDiffMenu) ? 1 : 0;
-    stella_set_right_difficulty(sRDiffVal);
+
+// Called from poll_input each tick: once both holds have drained, snap the
+// menu UI back to "None" so a fresh selection of Select/Reset re-fires.
+void stellapd_input_menu_idle_if_done(void)
+{
+    if (!sInputMenu) return;
+    if (sSelectHold == 0 && sResetHold == 0) {
+        int cur = pd_->system->getMenuItemValue(sInputMenu);
+        if (cur != 0) pd_->system->setMenuItemValue(sInputMenu, 0);
+    }
 }
 
 // Controller options menu: "Auto" / "Joystick" / "Paddle". Switching
@@ -543,25 +557,18 @@ int stellapd_event_handler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg, i
                                            // (per SDK: refresh=0 -> indeterminate
                                            // higher rate). Matches CrankBoy.
         pd->system->setAutoLockDisabled(1); // keep the device awake during dev/testing
-        pd->system->addMenuItem("Reset",  on_menu_reset,  NULL);
-        pd->system->addMenuItem("Select", on_menu_select, NULL);
-        static const char* ctrl_opts[]   = { "Auto", "Joystick", "Paddle" };
-        static const char* color_opts[]  = { "B&W", "Color" };
-        static const char* diff_opts[]   = { "B Novice", "A Pro" };
-        sCtrlMenu  = pd->system->addOptionsMenuItem("Control",  ctrl_opts, 3, on_menu_controller, NULL);
-        sColorMenu = pd->system->addOptionsMenuItem("TV Type",  color_opts, 2, on_menu_color, NULL);
-        sLDiffMenu = pd->system->addOptionsMenuItem("L Diff",   diff_opts, 2, on_menu_ldiff, NULL);
-        sRDiffMenu = pd->system->addOptionsMenuItem("R Diff",   diff_opts, 2, on_menu_rdiff, NULL);
-        // Initial OS-menu values: Color, B Novice / B Novice (matches the
-        // Switches.cpp default for these bits).
-        pd->system->setMenuItemValue(sColorMenu, sColorVal);
-        pd->system->setMenuItemValue(sLDiffMenu, sLDiffVal);
-        pd->system->setMenuItemValue(sRDiffMenu, sRDiffVal);
-        // Push them into the running Console so SWCHB starts with the
-        // intended bits even before the user touches the menu.
-        stella_set_color_mode(sColorVal);
-        stella_set_left_difficulty(sLDiffVal);
-        stella_set_right_difficulty(sRDiffVal);
+        // Per libcrankemu spec ("emulator should only set up to 1 menu item"),
+        // we own exactly one OS menu slot in either launch mode. Use it for
+        // Select/Reset pulses; the Control / TV Type / L Diff / R Diff /
+        // Backdrop / NTSC-PAL knobs live as libcrankemu preferences instead.
+        sInputMenu = pd->system->addOptionsMenuItem("Input", k_input_opts, 3,
+                                                    on_menu_input, NULL);
+        // Push initial switch defaults (Color, B Novice, B Novice) into the
+        // running Console so SWCHB starts with the intended bits even
+        // before the user opens preferences.
+        stella_set_color_mode(1);
+        stella_set_left_difficulty(0);
+        stella_set_right_difficulty(0);
         pd->system->setUpdateCallback(update_cb, pd);
     }
     return 0;
