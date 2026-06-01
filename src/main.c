@@ -13,7 +13,6 @@
 #include <string.h>
 #include <stddef.h>
 #include "dtcm.h"
-#include "libcrankemu.h"  // for kEventMenu
 
 // --- C interface to the C++ core ------------------------------------------
 extern int           stella_init(const uint8_t* image, uint32_t size);
@@ -482,7 +481,7 @@ static void on_menu_input(void* ud)
 }
 
 // (Re)add the "Input" menu item. Used by both the standalone init path
-// (one-time) and the dynamic-mode kEventLock path (the libcrankemu
+// (one-time) and the dynamic-mode kEventPause path (the libcrankemu
 // frontend wipes all menu items on every pause-menu refresh, so we have to
 // re-add each time it asks us to).
 static void install_input_menu_item(void)
@@ -548,11 +547,12 @@ int stellapd_event_handler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg, i
 {
     (void)arg;
 
-    // libcrankemu menu-setup hook: the frontend has just removeAllMenuItems
-    // and added its own entries; we get the remaining slot. kEventMenu is a
-    // libcrankemu synthetic event (above the SDK enum range), so it never
-    // collides with real device events. pd_ is set by an earlier kEventInit.
-    if (event == kEventMenu && dynamic && pd_)
+    // libcrankemu menu-setup hook: the frontend fires kEventPause on the
+    // emucore once it has finished removeAllMenuItems + adding its own
+    // entries -- our re-add then slots in last and survives the refresh.
+    // We only do this in dynamic mode; standalone .pdx adds the item once
+    // at kEventInit (it persists for the program lifetime).
+    if (event == kEventPause && dynamic && pd_)
     {
         install_input_menu_item();
         return 0;
