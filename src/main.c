@@ -563,10 +563,10 @@ int stellapd_event_handler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg, i
         // Backdrop / NTSC-PAL knobs live as libcrankemu preferences instead.
         sInputMenu = pd->system->addOptionsMenuItem("Input", k_input_opts, 3,
                                                     on_menu_input, NULL);
-        // Push initial switch defaults (Color, B Novice, B Novice) into the
+        // Push initial switch defaults (B&W, B Novice, B Novice) into the
         // running Console so SWCHB starts with the intended bits even
-        // before the user opens preferences.
-        stella_set_color_mode(1);
+        // before the user opens preferences. Matches the ce_iface defaults.
+        stella_set_color_mode(0);
         stella_set_left_difficulty(0);
         stella_set_right_difficulty(0);
         pd->system->setUpdateCallback(update_cb, pd);

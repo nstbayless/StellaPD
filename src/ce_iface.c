@@ -121,6 +121,32 @@ void   ce_save(uint8_t* b, size_t s)                     { (void)b; (void)s; }
 bool   ce_load(const uint8_t* b, size_t s)               { (void)b; (void)s; return true; }
 
 // --- preferences -----------------------------------------------------------
+//
+// Layout (categories are bracketed):
+//   [Input]
+//     Control  (Auto / Joystick / Paddle)
+//   [Miscellaneous]
+//     Letterbox  (Black / White margin colour)
+//     TV System  (NTSC / PAL)
+//   [Switches]
+//     TV Type             (B&W / Color)            default B&W
+//     L. Difficulty       (B Novice / A Pro)       always-local
+//     R. Difficulty       (B Novice / A Pro)       always-local
+//
+// CrankBoy's Settings_Scene case-insensitively merges "Input" and
+// "Miscellaneous" into its built-in sections of the same names. "Switches"
+// has no built-in counterpart, so it surfaces as a brand-new section
+// (between General and Library/Misc per the section-order rule).
+
+// "Input" category header.
+static const char* pref_input_cat_name(ce_preference_t* self) { (void)self; return "Input"; }
+static char s_pref_input_cat_id[] = "input";
+static ce_preference_t s_pref_input_cat = {
+    .type = CE_PREFERENCE_CATEGORY,
+    .id   = s_pref_input_cat_id,
+    .name = pref_input_cat_name,
+};
+
 // Control: Auto / Joystick / Paddle. Auto uses Joystick when the crank is
 // docked, Paddle when undocked, resolved at stella_init time.
 static const char* pref_control_name(ce_preference_t* self)        { (void)self; return "Control"; }
@@ -153,10 +179,20 @@ static ce_preference_t s_pref_control = {
     .flags        = pref_control_flags,
 };
 
-// Backdrop: colour for the static margins around the 320x210ish Atari image
-// on the 400x240 Playdate LCD.
-static const char* pref_backdrop_name(ce_preference_t* self)        { (void)self; return "Backdrop"; }
-static const char* pref_backdrop_description(ce_preference_t* self) { (void)self; return "Colour shown in the screen margins (outside the Atari image)."; }
+// "Miscellaneous" category header.
+static const char* pref_misc_cat_name(ce_preference_t* self) { (void)self; return "Miscellaneous"; }
+static char s_pref_misc_cat_id[] = "miscellaneous";
+static ce_preference_t s_pref_misc_cat = {
+    .type = CE_PREFERENCE_CATEGORY,
+    .id   = s_pref_misc_cat_id,
+    .name = pref_misc_cat_name,
+};
+
+// Letterbox: colour for the static margins around the 320x210ish Atari image
+// on the 400x240 Playdate LCD. (Persisted JSON key stays "backdrop" for
+// continuity with already-saved values.)
+static const char* pref_backdrop_name(ce_preference_t* self)        { (void)self; return "Letterbox"; }
+static const char* pref_backdrop_description(ce_preference_t* self) { (void)self; return "Colour shown in the screen margins outside the Atari image."; }
 static const char* const pref_backdrop_values[] = { "Black", "White", NULL };
 static unsigned pref_backdrop_get(ce_preference_t* self) { (void)self; return stellapd_get_backdrop_white() ? 1u : 0u; }
 static bool pref_backdrop_set(ce_preference_t* self, unsigned v)
@@ -226,7 +262,10 @@ static ce_preference_t s_pref_switches_cat = {
 
 // Currently-applied switch state, mirrored here so get() can answer without
 // asking the Console (which may not exist yet during ce_set_frontend).
-static int s_color_val  = 1;  // 1 = Color, 0 = B&W
+// TV Type defaults to B&W (0) per user preference -- a real Atari powers up
+// in either position depending on where the user last left the physical
+// switch, so this is purely a UX choice.
+static int s_color_val  = 0;  // 0 = B&W, 1 = Color
 static int s_ldiff_val  = 0;  // 0 = B (Novice), 1 = A (Pro)
 static int s_rdiff_val  = 0;
 
@@ -249,8 +288,13 @@ static ce_preference_t s_pref_color = {
     .values = pref_color_values, .get = pref_color_get, .set = pref_color_set,
 };
 
+// Difficulty switches are per-game: typical Atari players want different
+// difficulty levels for different cartridges, so persisting them globally
+// would be the wrong default.
+static uint32_t pref_diff_flags(ce_preference_t* self) { (void)self; return CE_PREF_ALWAYS_LOCAL; }
+
 static const char* const pref_diff_values[] = { "B (Novice)", "A (Pro)", NULL };
-static const char* pref_ldiff_name(ce_preference_t* self)        { (void)self; return "Left Difficulty"; }
+static const char* pref_ldiff_name(ce_preference_t* self)        { (void)self; return "L. Difficulty"; }
 static const char* pref_ldiff_description(ce_preference_t* self) { (void)self; return "Player 1 difficulty switch. A is the harder \"Pro\" setting."; }
 static unsigned pref_ldiff_get(ce_preference_t* self) { (void)self; return s_ldiff_val ? 1u : 0u; }
 static bool pref_ldiff_set(ce_preference_t* self, unsigned v)
@@ -266,9 +310,10 @@ static ce_preference_t s_pref_ldiff = {
     .type = CE_PREFERENCE_STANDARD, .id = s_pref_ldiff_id,
     .name = pref_ldiff_name, .description = pref_ldiff_description,
     .values = pref_diff_values, .get = pref_ldiff_get, .set = pref_ldiff_set,
+    .flags = pref_diff_flags,
 };
 
-static const char* pref_rdiff_name(ce_preference_t* self)        { (void)self; return "Right Difficulty"; }
+static const char* pref_rdiff_name(ce_preference_t* self)        { (void)self; return "R. Difficulty"; }
 static const char* pref_rdiff_description(ce_preference_t* self) { (void)self; return "Player 2 difficulty switch. A is the harder \"Pro\" setting."; }
 static unsigned pref_rdiff_get(ce_preference_t* self) { (void)self; return s_rdiff_val ? 1u : 0u; }
 static bool pref_rdiff_set(ce_preference_t* self, unsigned v)
@@ -284,12 +329,18 @@ static ce_preference_t s_pref_rdiff = {
     .type = CE_PREFERENCE_STANDARD, .id = s_pref_rdiff_id,
     .name = pref_rdiff_name, .description = pref_rdiff_description,
     .values = pref_diff_values, .get = pref_rdiff_get, .set = pref_rdiff_set,
+    .flags = pref_diff_flags,
 };
 
 static ce_preference_t* s_prefs[] = {
+    // [Input]
+    &s_pref_input_cat,
     &s_pref_control,
+    // [Miscellaneous]
+    &s_pref_misc_cat,
     &s_pref_backdrop,
     &s_pref_tv,
+    // [Switches]
     &s_pref_switches_cat,
     &s_pref_color,
     &s_pref_ldiff,
