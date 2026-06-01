@@ -27,9 +27,32 @@ extern void          stella_set_input(uint8_t up, uint8_t down, uint8_t left, ui
 extern void          stella_set_paddle(int pos1023, uint8_t fire);
 extern void          stella_set_paddle_mode(int on);
 extern int           stella_get_paddle_mode(void);
+extern void          stella_set_control_mode(int mode);    // 0=Auto, 1=Joystick, 2=Paddle
+extern int           stella_get_control_mode(void);
+extern void          stella_set_crank_docked(int docked);  // capture for Auto resolution
+extern void          stella_set_color_mode(int color);
+extern void          stella_set_left_difficulty(int diff_a);
+extern void          stella_set_right_difficulty(int diff_a);
+extern void          stella_set_tv_type(int pal);
+extern int           stella_get_tv_type(void);
 extern void          stella_set_dtcm_alloc(void* (*fn)(size_t));
 extern void          stella_alloc_buffers(void);
 extern const char*   stella_cart_name(void);
+
+// Backdrop fill colour for the LCD margins (0 = black, 1 = white). Mirrors
+// the libcrankemu pref `a26:backdrop`. Read by render_begin via backdrop_byte().
+int g_backdrop_white = 0;
+void stellapd_set_backdrop_white(int white) {
+    int v = white ? 1 : 0;
+    if (v != g_backdrop_white) {
+        g_backdrop_white = v;
+        // Force a full repaint so the new margin colour gets blitted to the LCD.
+        extern void stella_force_full_repaint(void);
+        stella_force_full_repaint();
+    }
+}
+int stellapd_get_backdrop_white(void) { return g_backdrop_white; }
+static inline uint8_t backdrop_byte(void) { return g_backdrop_white ? 0xFFu : 0x00u; }
 
 // pd_ and the button-state hook are non-static so the libcrankemu adapter
 // (src/ce_iface.c) can share them when StellaPD is loaded as a dynamic
@@ -153,7 +176,7 @@ static void render_begin(void)
     s_run_start = -1;
     s_full = g_force_full_repaint;
     if (s_full) {
-        memset(s_fb, 0x00, LCD_ROWSIZE * LCD_ROWS);   // paint static margins black once
+        memset(s_fb, backdrop_byte(), LCD_ROWSIZE * LCD_ROWS);   // paint static margins
         g_force_full_repaint = 0;
     }
 }
@@ -196,7 +219,7 @@ static void render_frame(void)
 
     int full = g_force_full_repaint;
     if (full) {
-        memset(dst, 0x00, LCD_ROWSIZE * LCD_ROWS);
+        memset(dst, backdrop_byte(), LCD_ROWSIZE * LCD_ROWS);
         g_force_full_repaint = 0;
     }
 
@@ -431,15 +454,43 @@ static int load_rom(PlaydateAPI* pd)
 static void on_menu_reset(void* ud) { (void)ud; sResetPress = 1; }
 static void on_menu_select(void* ud) { (void)ud; sSelectPress = 1; }
 
-// Controller options menu: "Joystick" / "Paddle". Switching rebuilds the
-// console (controller objects are chosen at construction time).
+// Console-switch menu items (stateful toggles on a real Atari).
+static PDMenuItem* sColorMenu = NULL;       // "Color" / "B&W"
+static PDMenuItem* sLDiffMenu = NULL;       // Left diff (P0): A=Pro / B=Novice
+static PDMenuItem* sRDiffMenu = NULL;       // Right diff (P1)
+static int sColorVal = 1;                   // 1 = Color, 0 = B&W
+static int sLDiffVal = 0;                   // 0 = B Novice, 1 = A Pro
+static int sRDiffVal = 0;
+static void on_menu_color(void* ud) {
+    (void)ud;
+    sColorVal = pd_->system->getMenuItemValue(sColorMenu) ? 1 : 0;
+    stella_set_color_mode(sColorVal);
+}
+static void on_menu_ldiff(void* ud) {
+    (void)ud;
+    sLDiffVal = pd_->system->getMenuItemValue(sLDiffMenu) ? 1 : 0;
+    stella_set_left_difficulty(sLDiffVal);
+}
+static void on_menu_rdiff(void* ud) {
+    (void)ud;
+    sRDiffVal = pd_->system->getMenuItemValue(sRDiffMenu) ? 1 : 0;
+    stella_set_right_difficulty(sRDiffVal);
+}
+
+// Controller options menu: "Auto" / "Joystick" / "Paddle". Switching
+// rebuilds the console (controller objects are chosen at construction
+// time). Auto resolves to Joystick or Paddle based on crank dock state at
+// stella_init time.
 static PDMenuItem* sCtrlMenu = NULL;
 static void on_menu_controller(void* ud)
 {
     (void)ud;
-    int idx = pd_->system->getMenuItemValue(sCtrlMenu);  // 0=Joystick, 1=Paddle
-    stella_set_paddle_mode(idx);
-    if (rom_size) stella_init(rom_buf, rom_size);         // reload with new controller
+    int idx = pd_->system->getMenuItemValue(sCtrlMenu);   // 0=Auto, 1=Joystick, 2=Paddle
+    stella_set_control_mode(idx);
+    if (rom_size) {
+        stella_set_crank_docked(pd_->system->isCrankDocked());
+        stella_init(rom_buf, rom_size);                   // reload with new controller
+    }
     paddle_pos = 512.0f;
     stella_force_full_repaint();                          // resync the row-diff baseline
 }
@@ -482,6 +533,10 @@ int stellapd_event_handler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg, i
         // future ITCM/DTCM pass on smaller hot state.
         stella_alloc_buffers();
         if (dynamic) return 0;
+        // For the standalone launch path we own ROM load + the OS menu items.
+        // Capture current crank dock state before the first stella_init so
+        // Auto-mode resolution picks the right controller.
+        stella_set_crank_docked(pd->system->isCrankDocked());
         if (!load_rom(pd)) return 0;
         pd->display->setRefreshRate(0);    // ASAP: system clocks update_cb faster
                                            // than 30Hz when dirty rows are few
@@ -490,9 +545,23 @@ int stellapd_event_handler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg, i
         pd->system->setAutoLockDisabled(1); // keep the device awake during dev/testing
         pd->system->addMenuItem("Reset",  on_menu_reset,  NULL);
         pd->system->addMenuItem("Select", on_menu_select, NULL);
-        static const char* ctrl_opts[] = { "Joystick", "Paddle" };
-        sCtrlMenu = pd->system->addOptionsMenuItem("Control", ctrl_opts, 2,
-                                                   on_menu_controller, NULL);
+        static const char* ctrl_opts[]   = { "Auto", "Joystick", "Paddle" };
+        static const char* color_opts[]  = { "B&W", "Color" };
+        static const char* diff_opts[]   = { "B Novice", "A Pro" };
+        sCtrlMenu  = pd->system->addOptionsMenuItem("Control",  ctrl_opts, 3, on_menu_controller, NULL);
+        sColorMenu = pd->system->addOptionsMenuItem("TV Type",  color_opts, 2, on_menu_color, NULL);
+        sLDiffMenu = pd->system->addOptionsMenuItem("L Diff",   diff_opts, 2, on_menu_ldiff, NULL);
+        sRDiffMenu = pd->system->addOptionsMenuItem("R Diff",   diff_opts, 2, on_menu_rdiff, NULL);
+        // Initial OS-menu values: Color, B Novice / B Novice (matches the
+        // Switches.cpp default for these bits).
+        pd->system->setMenuItemValue(sColorMenu, sColorVal);
+        pd->system->setMenuItemValue(sLDiffMenu, sLDiffVal);
+        pd->system->setMenuItemValue(sRDiffMenu, sRDiffVal);
+        // Push them into the running Console so SWCHB starts with the
+        // intended bits even before the user touches the menu.
+        stella_set_color_mode(sColorVal);
+        stella_set_left_difficulty(sLDiffVal);
+        stella_set_right_difficulty(sRDiffVal);
         pd->system->setUpdateCallback(update_cb, pd);
     }
     return 0;

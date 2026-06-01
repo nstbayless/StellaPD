@@ -32,6 +32,12 @@ extern void stella_force_full_repaint(void);
 extern int           stella_init(const uint8_t* image, uint32_t size);
 extern void          stella_set_paddle_mode(int on);
 extern int           stella_get_paddle_mode(void);
+extern void          stella_set_control_mode(int mode);
+extern int           stella_get_control_mode(void);
+extern void          stella_set_tv_type(int pal);
+extern int           stella_get_tv_type(void);
+extern void          stellapd_set_backdrop_white(int white);
+extern int           stellapd_get_backdrop_white(void);
 extern void          stella_set_dtcm_alloc(void* (*fn)(size_t));
 extern const char*   stella_cart_name(void);
 
@@ -105,15 +111,17 @@ void   ce_save(uint8_t* b, size_t s)                     { (void)b; (void)s; }
 bool   ce_load(const uint8_t* b, size_t s)               { (void)b; (void)s; return true; }
 
 // --- preferences -----------------------------------------------------------
+// Control: Auto / Joystick / Paddle. Auto uses Joystick when the crank is
+// docked, Paddle when undocked, resolved at stella_init time.
 static const char* pref_control_name(ce_preference_t* self)        { (void)self; return "Control"; }
-static const char* pref_control_description(ce_preference_t* self) { (void)self; return "Input device emulated for the Atari controller port."; }
-static const char* const pref_control_values[] = { "Joystick", "Paddle", NULL };
-static unsigned pref_control_get(ce_preference_t* self) { (void)self; return stella_get_paddle_mode() ? 1 : 0; }
+static const char* pref_control_description(ce_preference_t* self) { (void)self; return "Input device emulated for the Atari controller port.\n \nAuto picks Joystick when the crank is docked, Paddle when undocked."; }
+static const char* const pref_control_values[] = { "Auto", "Joystick", "Paddle", NULL };
+static unsigned pref_control_get(ce_preference_t* self) { (void)self; return (unsigned)stella_get_control_mode(); }
 static bool pref_control_set(ce_preference_t* self, unsigned v)
 {
     (void)self;
-    if (v > 1) return false;
-    stella_set_paddle_mode((int)v);
+    if (v > 2) return false;
+    stella_set_control_mode((int)v);
     stella_force_full_repaint();
     return true;
 }
@@ -135,7 +143,62 @@ static ce_preference_t s_pref_control = {
     .flags        = pref_control_flags,
 };
 
-static ce_preference_t* s_prefs[] = { &s_pref_control, NULL };
+// Backdrop: colour for the static margins around the 320x210ish Atari image
+// on the 400x240 Playdate LCD.
+static const char* pref_backdrop_name(ce_preference_t* self)        { (void)self; return "Backdrop"; }
+static const char* pref_backdrop_description(ce_preference_t* self) { (void)self; return "Colour shown in the screen margins (outside the Atari image)."; }
+static const char* const pref_backdrop_values[] = { "Black", "White", NULL };
+static unsigned pref_backdrop_get(ce_preference_t* self) { (void)self; return stellapd_get_backdrop_white() ? 1u : 0u; }
+static bool pref_backdrop_set(ce_preference_t* self, unsigned v)
+{
+    (void)self;
+    if (v > 1) return false;
+    stellapd_set_backdrop_white((int)v);
+    return true;
+}
+static char s_pref_backdrop_id[] = "backdrop";
+static ce_preference_t s_pref_backdrop = {
+    .ud           = NULL,
+    .type         = CE_PREFERENCE_STANDARD,
+    .id           = s_pref_backdrop_id,
+    .name         = pref_backdrop_name,
+    .description  = pref_backdrop_description,
+    .values       = pref_backdrop_values,
+    .get          = pref_backdrop_get,
+    .set          = pref_backdrop_set,
+    .flags        = NULL,
+};
+
+// TV System: NTSC (default) or PAL. Affects palette and display timing;
+// changing requires a Console reload.
+static const char* pref_tv_name(ce_preference_t* self)        { (void)self; return "TV System"; }
+static const char* pref_tv_description(ce_preference_t* self) { (void)self; return "Region the cart was made for. PAL carts assume 50 Hz / different palette."; }
+static const char* const pref_tv_values[] = { "NTSC", "PAL", NULL };
+static unsigned pref_tv_get(ce_preference_t* self) { (void)self; return stella_get_tv_type() ? 1u : 0u; }
+static bool pref_tv_set(ce_preference_t* self, unsigned v)
+{
+    (void)self;
+    if (v > 1) return false;
+    stella_set_tv_type((int)v);
+    return true;
+}
+static uint32_t pref_tv_flags(ce_preference_t* self) { (void)self; return CE_PREF_REQUIRES_RESTART; }
+static char s_pref_tv_id[] = "tv_system";
+static ce_preference_t s_pref_tv = {
+    .ud           = NULL,
+    .type         = CE_PREFERENCE_STANDARD,
+    .id           = s_pref_tv_id,
+    .name         = pref_tv_name,
+    .description  = pref_tv_description,
+    .values       = pref_tv_values,
+    .get          = pref_tv_get,
+    .set          = pref_tv_set,
+    .flags        = pref_tv_flags,
+};
+
+static ce_preference_t* s_prefs[] = {
+    &s_pref_control, &s_pref_backdrop, &s_pref_tv, NULL,
+};
 ce_preference_t** ce_get_preferences(uint8_t* rom, size_t size)
 {
     (void)rom; (void)size;

@@ -17,6 +17,8 @@
 #include "emucore/EventHandler.hxx"
 #include "emucore/TIA.hxx"
 
+extern uInt8 tv_type_requested;  // defined in emucore/Cart.cpp
+
 // --- TIA framebuffers (8-bit palette indices) ------------------------------
 // TIA::reset() zero-fills exactly 160*300 bytes of *each* buffer (see TIA.cpp),
 // so the buffer must be at least that big or we'll smash adjacent globals.
@@ -56,9 +58,52 @@ extern "C" {
   uInt16* bptr = sDsScratch + 1;       // TIASound DS audio FIFO B
 }
 
-// Controller selection (0 = joystick, 1 = paddle). Set from the Playdate
-// menu via stella_set_paddle_mode(); consumed by the Console constructor.
+// Effective controller selection at the moment of Console construction
+// (0 = joystick, 1 = paddle). Resolved from g_control_mode + crank-docked
+// state in stella_init. Consumed by the Console constructor.
 int g_controller_is_paddle = 0;
+
+// User-facing control mode: 0 = Auto (use crank-dock to pick), 1 = Joystick,
+// 2 = Paddle. Persisted by libcrankemu; default Auto.
+static int g_control_mode = 0;
+
+// Snapshot of "is crank docked?" captured by the frontend just before each
+// stella_init when in Auto mode. Frontend sets this via
+// stella_set_crank_docked() (main.c does so right before init).
+static int g_crank_docked_at_init = 1;  // start assuming docked = Joystick
+
+extern "C" void stella_set_control_mode(int mode)
+{
+  if (mode < 0 || mode > 2) mode = 0;
+  g_control_mode = mode;
+}
+extern "C" int  stella_get_control_mode(void) { return g_control_mode; }
+
+extern "C" void stella_set_crank_docked(int docked) { g_crank_docked_at_init = docked ? 1 : 0; }
+extern "C" int  stella_resolve_paddle_mode(void)
+{
+  if (g_control_mode == 1) return 0;  // Joystick
+  if (g_control_mode == 2) return 1;  // Paddle
+  // Auto: undocked crank -> Paddle, docked -> Joystick.
+  return g_crank_docked_at_init ? 0 : 1;
+}
+
+// Backwards-compatible getter for the menu/UI: returns the *effective* mode
+// (what the running Console is using), so poll_input can branch as before.
+// stella_set_paddle_mode is the legacy two-state setter, now mapped onto
+// g_control_mode.
+extern "C" void stella_set_paddle_mode(int on) { g_control_mode = on ? 2 : 1; }
+extern "C" int  stella_get_paddle_mode(void)   { return g_controller_is_paddle; }
+
+// --- console switches: TV type / difficulty ------------------------------
+// These map to memory bits in SWCHB (read by Switches.cpp). The frontend
+// remembers the toggle state in OS-menu options items and pushes events
+// here whenever the toggle changes; Switches::read() picks them up next
+// time the cart reads SWCHB.
+extern "C" void stella_set_color_mode(int color);
+extern "C" void stella_set_left_difficulty(int diff_a);
+extern "C" void stella_set_right_difficulty(int diff_a);
+// (Definitions appear later in this TU, alongside the other event setters.)
 
 // CPU core selection for STELLA_DUAL_CPU comparison builds (0=Stella, 1=smol).
 int g_cpu_core = 0;
@@ -162,6 +207,10 @@ extern "C" int stella_init(const uInt8* image, uInt32 size)
 
   stella_alloc_buffers();   // ensure fast_cart_buffer / myRAM exist (no-op if done)
 
+  // Resolve effective controller from user-facing control mode (+ crank
+  // dock state for Auto). Console::ctor reads g_controller_is_paddle.
+  g_controller_is_paddle = stella_resolve_paddle_mode();
+
   // Make sure TIA sees our framebuffer storage.
   myCurrentFrameBuffer[0] = sFrameBufferA;
   myCurrentFrameBuffer[1] = sFrameBufferB;
@@ -211,9 +260,43 @@ extern "C" void stella_set_input(uInt8 up, uInt8 down, uInt8 left, uInt8 right,
   ev.set(Event::ConsoleReset,      reset_ ? 1 : 0);
 }
 
-// Set paddle mode (0=joystick, 1=paddle). Takes effect on next stella_init.
-extern "C" void stella_set_paddle_mode(int on) { g_controller_is_paddle = on ? 1 : 0; }
-extern "C" int  stella_get_paddle_mode(void)   { return g_controller_is_paddle; }
+// (stella_set_paddle_mode / stella_get_paddle_mode now defined near the top
+// of this TU, alongside the new 3-state stella_set_control_mode.)
+
+// Console-switch event setters. Switches::read() consumes the paired events
+// (one drives the bit up, the other down); we set both each call so the
+// bit reliably reflects the user's chosen position.
+extern "C" void stella_set_color_mode(int color)
+{
+  if (!sConsole) return;
+  Event& ev = *sConsole->eventHandler().event();
+  ev.set(Event::ConsoleColor,      color ? 1 : 0);
+  ev.set(Event::ConsoleBlackWhite, color ? 0 : 1);
+}
+
+extern "C" void stella_set_left_difficulty(int diff_a)
+{
+  if (!sConsole) return;
+  Event& ev = *sConsole->eventHandler().event();
+  ev.set(Event::ConsoleLeftDifficultyA, diff_a ? 1 : 0);
+  ev.set(Event::ConsoleLeftDifficultyB, diff_a ? 0 : 1);
+}
+
+extern "C" void stella_set_right_difficulty(int diff_a)
+{
+  if (!sConsole) return;
+  Event& ev = *sConsole->eventHandler().event();
+  ev.set(Event::ConsoleRightDifficultyA, diff_a ? 1 : 0);
+  ev.set(Event::ConsoleRightDifficultyB, diff_a ? 0 : 1);
+}
+
+// TV system: 0 = NTSC, 1 = PAL. Takes effect on next stella_init (cart
+// construction reads tv_type_requested into myCartInfo.tv_type).
+extern "C" void stella_set_tv_type(int pal)
+{
+  tv_type_requested = pal ? PAL : NTSC;
+}
+extern "C" int  stella_get_tv_type(void) { return tv_type_requested == PAL ? 1 : 0; }
 
 // Feed an analog paddle position in [0..1023] (e.g. from the crank angle):
 // 0 maps to maximum resistance (one extreme), 1023 to minimum. Also sets the
