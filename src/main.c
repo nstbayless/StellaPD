@@ -39,6 +39,7 @@ extern void          stella_set_dtcm_alloc(void* (*fn)(size_t));
 extern void          stella_alloc_buffers(void);
 extern void          stella_audio_init(PlaydateAPI* pd);
 extern void          stella_audio_shutdown(PlaydateAPI* pd);
+extern void          stella_pump_audio(unsigned int now_ms);
 extern const char*   stella_cart_name(void);
 
 // Backdrop fill colour for the LCD margins (0 = black, 1 = white). Mirrors
@@ -408,10 +409,19 @@ static int update_cb(void* userdata)
 #endif
     unsigned int t1, t2;
     t1 = t2 = pd_->system->getCurrentTimeMilliseconds();
+    // Drive audio production from wall-clock elapsed time, once per tick
+    // (the previous per-TIA::poke producer rate was a 4x mismatch with the
+    // 15.7 kHz consumer, dropping ~72% of samples at irregular intervals).
+    stella_pump_audio(t1);
 #else
     unsigned int t1, t2;
     stella_run_frame();
     stella_run_frame();
+    // Push audio samples (15.7 kHz internal) to match wall-clock elapsed
+    // time so the audio source callback never sees the ring drain. Doing
+    // this once per tick keeps the producer in lockstep with the host's
+    // consumption rate, which the previous TIA::poke-driven path didn't.
+    stella_pump_audio(pd_->system->getCurrentTimeMilliseconds());
     t1 = pd_->system->getCurrentTimeMilliseconds();
     render_frame();
     t2 = pd_->system->getCurrentTimeMilliseconds();

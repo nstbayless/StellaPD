@@ -218,6 +218,34 @@ extern "C" {
   // callback instead so the producer can make forward progress.
   extern uInt16 wave_direct_samples;
 }
+// Tia_process is plain C++ linkage in TIASound.cpp (no extern "C") -- this
+// TU is also C++, so the mangled name matches.
+void Tia_process(void);
+
+// Drive sample production from wall-clock elapsed time so the producer
+// rate matches the audio thread's consume rate exactly (no irregular drops
+// or underruns). Called once per Playdate tick from update_cb after the
+// stella_run_frame() pair. Each tick we compute the number of samples
+// 15.7 kHz playback needs for the elapsed wall window and run Tia_process
+// that many times, with a small clamp so a long pause (debugger break,
+// host stall) doesn't make us batch a giant catch-up burst.
+extern "C" void stella_pump_audio(unsigned int now_ms)
+{
+    static unsigned int s_last_ms = 0;
+    static int          s_fractional_acc = 0;   // sub-millisecond residue
+    if (s_last_ms == 0) {
+        s_last_ms = now_ms;
+        return;
+    }
+    unsigned int dt_ms = now_ms - s_last_ms;
+    s_last_ms = now_ms;
+    if (dt_ms == 0) return;
+    if (dt_ms > 200) dt_ms = 200;   // clamp catch-up
+    // 15700 samples/sec => 15700 * dt_ms / 1000 samples needed
+    int samples = (int)((15700u * dt_ms + s_fractional_acc) / 1000u);
+    s_fractional_acc = (int)((15700u * dt_ms + s_fractional_acc) % 1000u);
+    for (int i = 0; i < samples; ++i) Tia_process();
+}
 
 extern "C" {
 int stella_mute = 0;
@@ -264,12 +292,16 @@ static int stella_audio_cb(void* /*ctx*/, int16_t* left, int16_t* right, int len
                 uInt16 raw = tia_buf[out_idx];
                 out_idx = (out_idx + 1) & buf_mask;
                 wave_direct_samples++;
-                // raw is u16 in [0..~3840]; centre near 0 and amplify into
-                // the int16 range. Subtracting 0x800 lifts most of the
-                // implicit DC offset off; the speaker AC-couples the rest.
-                int32_t s = ((int32_t)raw - 0x800) << 3;
+                // tia_buf is unipolar: sampleExtender[Outvol0+Outvol1]
+                // with silence at raw=0 (Outvol both zero) and peak near
+                // raw=3840 (each Outvol = AUDV = 15, 30<<8/2 = 3840). Just
+                // amplify -- silence MUST stay at 0, not be shifted into
+                // the negative range, or every silence->voice transition
+                // becomes an audible DC step (which was the crackle).
+                // The Playdate speaker AC-couples the resulting unipolar
+                // wave so the user hears the AC component.
+                int32_t s = (int32_t)raw << 3;
                 if (s >  32767) s =  32767;
-                if (s < -32768) s = -32768;
                 s_cur = (int16_t)s;
             }
             // else: underrun -- hold previous (s_prev = s_cur already)

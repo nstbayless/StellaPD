@@ -2033,14 +2033,13 @@ void TIA::poke(uInt16 addr, uInt8 value)
       delta_clock = 0;
   }
 
-  if (unlikely(bWaveDirectSound))
-  {
-      while ((gSystemCycles - lastTiaPokeCycles) >= 76)
-      {
-          lastTiaPokeCycles += 76;
-          Tia_process();
-      }
-  }
+  // Playdate audio path: drive Tia_process from update_cb based on
+  // wall-clock elapsed time (see stella_glue.cpp::stella_pump_audio) rather
+  // than from TIA::poke. The old per-76-cycles call gave 2008 emits per
+  // Playdate tick but the resampler only consumed ~560, so 72% of samples
+  // were getting dropped at irregular times -- audible crackle. Letting
+  // the audio callback drive the rate keeps producer/consumer in lockstep.
+  (void)bWaveDirectSound;
 
   switch(addr)
   {
