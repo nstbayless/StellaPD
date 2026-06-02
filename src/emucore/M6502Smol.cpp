@@ -38,14 +38,23 @@ extern uInt8  A, X, Y, SP;
 extern int*   stack_executionStatus;
 
 // --- this core's register file ---------------------------------------------
-static uint8_t s_A, s_X, s_Y, s_S;
-static uint8_t s_PCL, s_PCH;
+// Anchored into .bss.stellapd_hot. These are touched on every emulated
+// instruction (one of the loads inside cpu_step_custom shows up at PC ~0x2a8
+// in the profile, with 70+ samples per 8 s trace -- a cache miss here costs
+// real wall-clock).
+#define SMOL_REG __attribute__((section(".bss.stellapd_hot.smol_regs")))
+static uint8_t SMOL_REG s_A;
+static uint8_t SMOL_REG s_X;
+static uint8_t SMOL_REG s_Y;
+static uint8_t SMOL_REG s_S;
+static uint8_t SMOL_REG s_PCL;
+static uint8_t SMOL_REG s_PCH;
 typedef union {
     uint8_t byte;
     struct { uint8_t c:1, z:1, i:1, d:1, b:1, u:1, v:1, n:1; } bits;
 } smol_p_t;
-static smol_p_t s_Pun;
-static uint8_t s_nmi_irq = 0;   // 6507 has no NMI; IRQ tied off -> always 0
+static smol_p_t SMOL_REG s_Pun;
+static uint8_t SMOL_REG s_nmi_irq = 0;   // 6507 has no NMI; IRQ tied off -> always 0
 
 // Predict mode (instruction-level comparison): when set, smol_mem must NOT
 // mutate the machine. ONLY exists in the dual-CPU comparison build -- gating

@@ -418,7 +418,11 @@ static int update_cb(void* userdata)
     emu_ms += (t1 - ta);   // crude: time from start of update_cb to after run2
     ren_ms += (t2 - t1);
 #if TICK_STAGE >= 3
-    pd_->system->drawFPS(0, 0);
+    // Skip drawFPS when running as a libcrankemu core -- the host frontend
+    // owns the on-screen overlay, and drawFPS each tick is a measurable
+    // syscall cost we don't need to pay when nobody sees it.
+    if (!stellapd_get_buttons_hook)
+        pd_->system->drawFPS(0, 0);
 #endif
 
     unsigned int th = pd_->system->getCurrentTimeMilliseconds();

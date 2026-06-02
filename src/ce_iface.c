@@ -113,7 +113,23 @@ void ce_unload_rom(void) { }
 bool ce_play(void) { return true; }
 void ce_stop(void) { }
 
-void ce_update(void) { stellapd_run_tick(); }
+// Returns the number of *emulated* frames advanced per host tick. Stella
+// runs two Atari NTSC frames per Playdate update so the user sees ~60 Hz
+// gameplay on the 30 Hz host -- report 2 so the frontend's pacing logic
+// (turbo / frame budgeting) has the right value.
+int ce_update(void) { stellapd_run_tick(); return 2; }
+
+// Tell the frontend what optional facilities this core uses.
+//   itcm_allowed: StellaPD's hot interpreter benefits from ITCM placement
+//                 (see commit 5275ec1's perf work).
+//   turbo:        true == do not frame-rate-limit; we always run at the
+//                 host's max update tick (the Atari frame pacing is the
+//                 caller's job).
+static const ce_frontend_config_t s_config = {
+    .itcm_allowed = true,
+    .turbo = true,
+};
+const ce_frontend_config_t* ce_config(void) { return &s_config; }
 
 // The frontend scribbled over the framebuffer (showed a modal etc.) and
 // wants us to repaint our entire image on the next tick. We just flip the
@@ -412,6 +428,7 @@ PDLL_EXPORT(
     ce_play,
     ce_stop,
     ce_update,
+    ce_config,
     ce_full_redraw,
     ce_is_save_dirty,
     ce_get_rom_save_size,
