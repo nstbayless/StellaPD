@@ -601,6 +601,16 @@ COLD_MAIN int stellapd_event_handler(PlaydateAPI* pd, PDSystemEvent event, uint3
 {
     (void)arg;
 
+    // Release process-global resources acquired at kEventInit. A libcrankemu
+    // frontend may open/close us transiently (e.g. to read metadata), and the
+    // audio source registered below outlives our image otherwise -- its
+    // callback would dangle into freed memory and fault the audio thread.
+    if (event == kEventTerminate)
+    {
+        stella_audio_shutdown(pd);
+        return 0;
+    }
+
     // libcrankemu menu-setup hook: the frontend fires kEventPause on the
     // emucore once it has finished removeAllMenuItems + adding its own
     // entries -- our re-add then slots in last and survives the refresh.
