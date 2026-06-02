@@ -6,6 +6,7 @@
 //   - A pair of TIA frame buffers (160 x 256).
 
 #include "pd_compat.h"
+#include "pd_api.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -15,6 +16,7 @@
 #include "emucore/Console.hxx"
 #include "emucore/Event.hxx"
 #include "emucore/EventHandler.hxx"
+#include "emucore/System.hxx"   // SOUND_SIZE
 #include "emucore/TIA.hxx"
 
 extern uInt8 tv_type_requested;  // defined in emucore/Cart.cpp
@@ -198,6 +200,85 @@ static uInt8 sFastCartStorage[FAST_CART_BYTES] __attribute__((aligned(8)));
 static uInt8 sMyRamStorage[256]                __attribute__((aligned(8)));
 
 extern "C" COLD_GLUE void stella_set_dtcm_alloc(void* (*fn)(size_t)) { s_dtcm_alloc = fn; }
+
+// --- Audio output ----------------------------------------------------------
+// Stella's TIASound.cpp produces samples into a SOUND_SIZE ring (tia_buf[])
+// at the playback rate we set via Tia_sound_init() -- we configure that to
+// 44.1 kHz to match the Playdate's fixed audio output rate. An audio source
+// callback drains samples from tia_buf into the host's int16 stream;
+// Tia_process() (called from TIA::poke under the main update tick) is the
+// producer. Single-producer / single-consumer, so the volatile uInt16
+// indices act as the synchronization without locks.
+extern "C" {
+  extern uInt16 *tia_buf;
+  extern uInt16 tia_buf_idx;
+  extern uInt16 tia_out_idx;
+  // Tia_process spin-waits on this counter when the ring is full; the DS
+  // port incremented it from a TIMER2 ISR. We bump it from the audio
+  // callback instead so the producer can make forward progress.
+  extern uInt16 wave_direct_samples;
+}
+
+extern "C" {
+int stella_mute = 0;
+}
+extern "C" void stella_set_mute(int mute) { stella_mute = mute ? 1 : 0; }
+extern "C" int  stella_get_mute(void) { return stella_mute; }
+
+static int stella_audio_cb(void* /*ctx*/, int16_t* left, int16_t* right, int len)
+{
+    (void)right;   // we register as mono; right is ignored
+    if (stella_mute) {
+        for (int i = 0; i < len; ++i) left[i] = 0;
+        return 1;
+    }
+    // tia_buf samples are uint16 centered around 0 (silence == 0) but ramp
+    // up to ~0x7F80 at max output. They never go negative, so reinterpret
+    // and subtract a small DC bias to keep the speaker happy. The shift
+    // gives a bit of headroom; the TIA's two channels summed peak around
+    // 0x3000 in practice, so << 1 stays well below int16 clipping.
+    const uInt16 buf_mask = SOUND_SIZE - 1;
+    uInt16 out_idx = tia_out_idx;
+    const uInt16 in_idx = tia_buf_idx;
+    int i = 0;
+    while (i < len)
+    {
+        if (out_idx == in_idx) {
+            // Underrun: hold the last sample we managed to emit.
+            int16_t s = (i > 0) ? left[i-1] : 0;
+            for (; i < len; ++i) left[i] = s;
+            break;
+        }
+        uInt16 raw = tia_buf[out_idx];
+        out_idx = (out_idx + 1) & buf_mask;
+        // raw is u16 in [0..~3840] (sum of sampleExtender lookups for the
+        // two TIA channels). Amplify into the int16 range; the Playdate
+        // speakers are AC-coupled so the DC bias gets stripped downstream.
+        int32_t s = (int32_t)raw << 3;
+        if (s >  32767) s =  32767;
+        left[i++] = (int16_t)s;
+    }
+    tia_out_idx = out_idx;
+    return 1;
+}
+
+extern "C" SoundSource* g_stella_sound_source;
+SoundSource* g_stella_sound_source = NULL;
+
+extern "C" void stella_audio_init(PlaydateAPI* pd)
+{
+    if (g_stella_sound_source) return;
+    if (!pd || !pd->sound || !pd->sound->addSource) return;
+    g_stella_sound_source = pd->sound->addSource(stella_audio_cb, NULL, 0 /*mono*/);
+}
+
+extern "C" void stella_audio_shutdown(PlaydateAPI* pd)
+{
+    if (!g_stella_sound_source) return;
+    if (pd && pd->sound && pd->sound->removeSource)
+        pd->sound->removeSource(g_stella_sound_source);
+    g_stella_sound_source = NULL;
+}
 
 extern "C" void stella_alloc_buffers(void)
 {

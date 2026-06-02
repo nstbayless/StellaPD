@@ -37,6 +37,8 @@ extern void          stella_set_tv_type(int pal);
 extern int           stella_get_tv_type(void);
 extern void          stella_set_dtcm_alloc(void* (*fn)(size_t));
 extern void          stella_alloc_buffers(void);
+extern void          stella_audio_init(PlaydateAPI* pd);
+extern void          stella_audio_shutdown(PlaydateAPI* pd);
 extern const char*   stella_cart_name(void);
 
 // Backdrop fill colour for the LCD margins (0 = black, 1 = white). Mirrors
@@ -599,6 +601,10 @@ COLD_MAIN int stellapd_event_handler(PlaydateAPI* pd, PDSystemEvent event, uint3
         // so stella_alloc_buffers() uses static RAM. The infra stays for a
         // future ITCM/DTCM pass on smaller hot state.
         stella_alloc_buffers();
+        // Audio source registration is shared between standalone and
+        // libcrankemu modes -- the source pulls samples from tia_buf and
+        // doesn't care who's driving the update tick.
+        stella_audio_init(pd);
         if (dynamic) return 0;
         // For the standalone launch path we own ROM load + the OS menu items.
         // Capture current crank dock state before the first stella_init so

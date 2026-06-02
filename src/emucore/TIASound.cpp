@@ -417,19 +417,26 @@ ITCM_CODE void Tia_process(void)
             // buffer to 'drain' before moving on. This allows the sound buffer to essentially 
             // drive the system at close to 60 fps. It's not perfect but good enough.
             // ---------------------------------------------------------------------------------
+            // DS port used to busy-wait here for a TIMER2 ISR to drain half
+            // the ring (no such ISR exists on Playdate; our audio source
+            // callback in stella_glue.cpp is the consumer). The busy-wait
+            // burned ~7 fps. Single-producer / single-consumer means
+            // tia_out_idx is written only by the audio callback and
+            // tia_buf_idx only here; on overrun, drop the NEW sample
+            // (rather than touching tia_out_idx, which would race the
+            // consumer). The tia_buf_idx write below is also skipped, so
+            // the consumer just keeps reading already-produced samples
+            // until we catch up.
             uInt16 new_idx = ((tia_buf_idx+1) & (SOUND_SIZE-1));
             if (new_idx == tia_out_idx)
             {
+                // Ring full -- drop this sample, don't advance the write
+                // pointer. The producer will retry next call.
                 bProcessingSample = false;
-                wave_direct_samples=0;
-                volatile int temp=0;
-                while (wave_direct_samples < (SOUND_SIZE/2))
-                {
-                    if (++temp > 500000) break; // In case we are muted and the ISR isn't running...
-                }
+                return;
             }
-            
-            tia_buf[tia_buf_idx] = sampleExtender[(uInt16)Outvol[0] + (uInt16)Outvol[1]]; //sampleExtender[(uInt16)Outvol[0] + (uInt16)Outvol[1]];
+
+            tia_buf[tia_buf_idx] = sampleExtender[(uInt16)Outvol[0] + (uInt16)Outvol[1]];
             tia_buf_idx = new_idx;
         }
         else

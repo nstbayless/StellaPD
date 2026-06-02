@@ -49,6 +49,10 @@ alignas(32) static unsigned char g_m6502_storage[256]
 
 extern uInt16 mySoundFreq;
 
+// Playdate audio runs at a fixed 44.1 kHz; produce samples at the same
+// rate so the audio source callback can copy 1:1 with no resampling.
+#define STELLA_AUDIO_RATE 44100
+
 Console::Console(const uInt8* image, uInt32 size, const char* /*filename*/)
 {
   myControllers[0] = 0;
@@ -76,18 +80,22 @@ Console::Console(const uInt8* image, uInt32 size, const char* /*filename*/)
           myCartInfo.displayStartScanline, myCartInfo.displayNumScalines);
   #endif
 
-  mySoundFreq = 20933;
-  if (myCartInfo.soundQuality == SOUND_MUTE)  mySoundFreq = 10466;
-  if (myCartInfo.soundQuality == SOUND_10KHZ) mySoundFreq = 10466;
-  if (myCartInfo.soundQuality == SOUND_15KHZ) mySoundFreq = 15700;
-  if (myCartInfo.soundQuality == SOUND_20KHZ) mySoundFreq = 20933;
-  if (myCartInfo.soundQuality == SOUND_30KHZ) mySoundFreq = 31400;
+  // Force SOUND_WAVE on the Playdate: that path pushes TIA samples through
+  // the tia_buf[] ring (Tia_process), which our audio source callback in
+  // stella_glue.cpp drains. The other paths write samples to *aptr/*bptr
+  // (the libnds audio FIFO), which on Playdate point at scratch RAM and go
+  // nowhere. Override regardless of what the cart-detect code chose.
+  myCartInfo.soundQuality = SOUND_WAVE;
+  mySoundFreq = STELLA_AUDIO_RATE;
 
   theTIA.setConsole(this);
   #ifdef HOST_TEST
   fprintf(stderr, "[Console] before Tia_sound_init: start=%u num=%u\n",
           myCartInfo.displayStartScanline, myCartInfo.displayNumScalines);
   #endif
+  // Resample the TIA's ~31.4 kHz internal audio clock to the Playdate's
+  // fixed 44.1 kHz output rate -- the ring buffer holds samples already at
+  // playback rate, so the audio callback can copy them straight out.
   Tia_sound_init(31400, mySoundFreq);
   #ifdef HOST_TEST
   fprintf(stderr, "[Console] after Tia_sound_init: start=%u num=%u\n",
