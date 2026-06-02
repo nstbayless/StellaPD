@@ -273,7 +273,14 @@ static bool pref_control_set(ce_preference_t* self, unsigned v)
 
 // Changing Control rebuilds the Console (controller objects are chosen at
 // construction time), so any change needs a restart to take effect cleanly.
-static uint32_t pref_control_flags(ce_preference_t* self) { (void)self; return CE_PREF_REQUIRES_RESTART; }
+// Default is Auto (0); surface CE_PREF_NONDEFAULT so the frontend can flag
+// the row when the user has pinned a specific controller.
+static uint32_t pref_control_flags(ce_preference_t* self)
+{
+    uint32_t f = CE_PREF_REQUIRES_RESTART;
+    if (pref_control_get(self) != 0) f |= CE_PREF_NONDEFAULT;
+    return f;
+}
 
 static char s_pref_control_id[] = "control";
 static ce_preference_t s_pref_control = {
@@ -311,6 +318,11 @@ static bool pref_backdrop_set(ce_preference_t* self, unsigned v)
     stellapd_set_backdrop_white((int)v);
     return true;
 }
+// Default is Black (0); flag non-default so the frontend can call it out.
+static uint32_t pref_backdrop_flags(ce_preference_t* self)
+{
+    return pref_backdrop_get(self) != 0 ? CE_PREF_NONDEFAULT : 0;
+}
 static char s_pref_backdrop_id[] = "backdrop";
 static ce_preference_t s_pref_backdrop = {
     .ud           = NULL,
@@ -321,7 +333,7 @@ static ce_preference_t s_pref_backdrop = {
     .values       = pref_backdrop_values,
     .get          = pref_backdrop_get,
     .set          = pref_backdrop_set,
-    .flags        = NULL,
+    .flags        = pref_backdrop_flags,
 };
 
 // TV System: NTSC (default) or PAL. Affects palette and display timing;
@@ -337,7 +349,14 @@ static bool pref_tv_set(ce_preference_t* self, unsigned v)
     stella_set_tv_type((int)v);
     return true;
 }
-static uint32_t pref_tv_flags(ce_preference_t* self) { (void)self; return CE_PREF_REQUIRES_RESTART; }
+// Default NTSC (0); requires Console rebuild on change, and flag non-default
+// so the frontend can mark the row when the user has switched regions.
+static uint32_t pref_tv_flags(ce_preference_t* self)
+{
+    uint32_t f = CE_PREF_REQUIRES_RESTART;
+    if (pref_tv_get(self) != 0) f |= CE_PREF_NONDEFAULT;
+    return f;
+}
 static char s_pref_tv_id[] = "tv_system";
 static ce_preference_t s_pref_tv = {
     .ud           = NULL,
@@ -390,17 +409,29 @@ static bool pref_color_set(ce_preference_t* self, unsigned v)
     stella_set_color_mode(s_color_val);
     return true;
 }
+// Default B&W (0); flag non-default when the user has flipped to Color.
+static uint32_t pref_color_flags(ce_preference_t* self)
+{
+    return pref_color_get(self) != 0 ? CE_PREF_NONDEFAULT : 0;
+}
 static char s_pref_color_id[] = "color_mode";
 static ce_preference_t s_pref_color = {
     .type = CE_PREFERENCE_STANDARD, .id = s_pref_color_id,
     .name = pref_color_name, .description = pref_color_description,
     .values = pref_color_values, .get = pref_color_get, .set = pref_color_set,
+    .flags = pref_color_flags,
 };
 
 // Difficulty switches are per-game: typical Atari players want different
 // difficulty levels for different cartridges, so persisting them globally
-// would be the wrong default.
-static uint32_t pref_diff_flags(ce_preference_t* self) { (void)self; return CE_PREF_ALWAYS_LOCAL; }
+// would be the wrong default. Default value is B (Novice, 0); flag the row
+// as non-default whenever the user has switched to A (Pro).
+static uint32_t pref_diff_flags(ce_preference_t* self)
+{
+    uint32_t f = CE_PREF_ALWAYS_LOCAL;
+    if (self && self->get && self->get(self) != 0) f |= CE_PREF_NONDEFAULT;
+    return f;
+}
 
 static const char* const pref_diff_values[] = { "B (Novice)", "A (Pro)", NULL };
 static const char* pref_ldiff_name(ce_preference_t* self)        { (void)self; return "L. Difficulty"; }
@@ -441,10 +472,60 @@ static ce_preference_t s_pref_rdiff = {
     .flags = pref_diff_flags,
 };
 
+// --- Audio category ------------------------------------------------------
+// Currently just an on/off toggle backed by the stella_mute flag in
+// stella_glue.cpp -- the audio source callback returns silence when set.
+// (The Playdate's master volume / headphone state are owned by the host
+// and shouldn't be duplicated as a per-game pref.)
+extern int stella_mute;
+extern void stella_set_mute(int mute);
+extern int  stella_get_mute(void);
+
+static const char* pref_audio_cat_name(ce_preference_t* self)  { (void)self; return "Audio"; }
+static char s_pref_audio_cat_id[] = "audio";
+static ce_preference_t s_pref_audio_cat = {
+    .ud   = NULL,
+    .type = CE_PREFERENCE_CATEGORY,
+    .id   = s_pref_audio_cat_id,
+    .name = pref_audio_cat_name,
+};
+
+static const char* pref_sound_name(ce_preference_t* self)        { (void)self; return "Sound"; }
+static const char* pref_sound_description(ce_preference_t* self) { (void)self; return "Enable Atari TIA sound output. Off mutes the channel; the emulator still runs the audio mixer (for save-state consistency) but emits silence."; }
+static const char* const pref_sound_values[] = { "Off", "On", NULL };
+static unsigned pref_sound_get(ce_preference_t* self) { (void)self; return stella_get_mute() ? 0u : 1u; }
+static bool pref_sound_set(ce_preference_t* self, unsigned v)
+{
+    (void)self;
+    if (v > 1) return false;
+    stella_set_mute(v == 0 ? 1 : 0);
+    return true;
+}
+// Default On (1); flag non-default when the user has muted.
+static uint32_t pref_sound_flags(ce_preference_t* self)
+{
+    return pref_sound_get(self) != 1 ? CE_PREF_NONDEFAULT : 0;
+}
+static char s_pref_sound_id[] = "sound";
+static ce_preference_t s_pref_sound = {
+    .ud           = NULL,
+    .type         = CE_PREFERENCE_STANDARD,
+    .id           = s_pref_sound_id,
+    .name         = pref_sound_name,
+    .description  = pref_sound_description,
+    .values       = pref_sound_values,
+    .get          = pref_sound_get,
+    .set          = pref_sound_set,
+    .flags        = pref_sound_flags,
+};
+
 static ce_preference_t* s_prefs[] = {
     // [Input]
     &s_pref_input_cat,
     &s_pref_control,
+    // [Audio]
+    &s_pref_audio_cat,
+    &s_pref_sound,
     // [Miscellaneous]
     &s_pref_misc_cat,
     &s_pref_backdrop,
