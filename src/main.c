@@ -42,7 +42,15 @@ extern const char*   stella_cart_name(void);
 // Backdrop fill colour for the LCD margins (0 = black, 1 = white). Mirrors
 // the libcrankemu pref `a26:backdrop`. Read by render_begin via backdrop_byte().
 int g_backdrop_white = 0;
-void stellapd_set_backdrop_white(int white) {
+
+// Park the new (libcrankemu-driven) entry points in .text.stellapd_cold so
+// they don't push the warm functions in main.c (update_cb, poll_input,
+// render_begin/end, dither_row_to via inlining) into different I-cache
+// positions. They're invoked from menu callbacks / pdll init, not the hot
+// path.
+#define COLD_MAIN __attribute__((section(".text_cold.main"), noinline))
+
+COLD_MAIN void stellapd_set_backdrop_white(int white) {
     int v = white ? 1 : 0;
     if (v != g_backdrop_white) {
         g_backdrop_white = v;
@@ -51,7 +59,7 @@ void stellapd_set_backdrop_white(int white) {
         stella_force_full_repaint();
     }
 }
-int stellapd_get_backdrop_white(void) { return g_backdrop_white; }
+COLD_MAIN int stellapd_get_backdrop_white(void) { return g_backdrop_white; }
 static inline uint8_t backdrop_byte(void) { return g_backdrop_white ? 0xFFu : 0x00u; }
 
 // pd_ and the button-state hook are non-static so the libcrankemu adapter
@@ -72,7 +80,10 @@ static const uint8_t kBayer4[16] = {
 };
 
 // Palette-index -> luma (low nibble * 17). Filled once at init.
-static uint8_t lumaLUT[256];
+// Anchored alongside opdecode_table in the .bss.stellapd_hot region (see
+// link_map.ld) for a stable D-cache set residue. Read once per pixel in
+// dither_row_to() during the hot per-row blit.
+static uint8_t lumaLUT[256] __attribute__((section(".bss.stellapd_hot.lumaLUT")));
 static void init_luma_lut(void)
 {
     for (int i = 0; i < 256; ++i) lumaLUT[i] = (uint8_t)((i & 0x0F) * 17);
@@ -93,7 +104,7 @@ static void init_luma_lut(void)
 static int  g_force_full_repaint = 1;
 static int  g_last_numLines = -1, g_last_yOff = -1;
 
-void stella_force_full_repaint(void) { g_force_full_repaint = 1; }
+COLD_MAIN void stella_force_full_repaint(void) { g_force_full_repaint = 1; }
 
 // Dither one 160-px source row to one packed LCD row (bytes [DEST_BYTE_X..+40)),
 // XOR-comparing against what's there. Returns nonzero if the row changed.
@@ -131,6 +142,7 @@ static int      s_full     = 0;     // forced full repaint this tick
 static int      s_run_start = -1;   // contiguous dirty-row run accumulator
 static unsigned g_marked_rows = 0;  // diagnostic: dirty rows over the log window
 
+__attribute__((section(".text.stellapd_hot.stella_emit_scanline")))
 void stella_emit_scanline(const uint8_t* line, int row)
 {
 #ifdef PROF_SKIP_EMIT
@@ -289,11 +301,17 @@ static int sResetHold  = 0;  // frames remaining where Reset is "pressed"
 
 static void poll_input(void)
 {
-    PDButtons cur, pressed, released;
-    if (stellapd_get_buttons_hook)
+    PDButtons cur;
+    if (stellapd_get_buttons_hook) {
+        // libcrankemu mode -- emit all three (some host bookkeeping reads
+        // pressed/released too); the hook is just reading already-cached state.
+        PDButtons pressed, released;
         stellapd_get_buttons_hook(&cur, &pressed, &released);
-    else
-        pd_->system->getButtonState(&cur, &pressed, &released);
+    } else {
+        // Standalone -- only `cur` is consumed below; passing NULL avoids the
+        // firmware computing transition masks for nothing.
+        pd_->system->getButtonState(&cur, NULL, NULL);
+    }
 
     uint8_t fire  = (cur & (kButtonA | kButtonB)) ? 1 : 0;
 
@@ -470,12 +488,18 @@ static int load_rom(PlaydateAPI* pd)
 static PDMenuItem* sInputMenu = NULL;
 static const char* k_input_opts[] = { "None", "Select", "Reset" };
 
-static void on_menu_input(void* ud)
+// Set whenever a Select/Reset pulse is in flight; clears once the menu
+// has been reset to None. Lets the per-frame idle check skip the
+// getMenuItemValue/setMenuItemValue syscall pair the rest of the time --
+// previously we ran that pair every frame and lost ~1 fps to it.
+static int s_input_menu_dirty = 0;
+
+COLD_MAIN static void on_menu_input(void* ud)
 {
     (void)ud;
     int idx = pd_->system->getMenuItemValue(sInputMenu);
-    if (idx == 1)      sSelectHold = kInputHoldFrames;
-    else if (idx == 2) sResetHold  = kInputHoldFrames;
+    if (idx == 1)      { sSelectHold = kInputHoldFrames; s_input_menu_dirty = 1; }
+    else if (idx == 2) { sResetHold  = kInputHoldFrames; s_input_menu_dirty = 1; }
     // idx == 0 (None) just leaves the holds alone; if a pulse is already
     // in flight, the user can't shorten it from here. That's fine.
 }
@@ -484,7 +508,7 @@ static void on_menu_input(void* ud)
 // (one-time) and the dynamic-mode kEventPause path (the libcrankemu
 // frontend wipes all menu items on every pause-menu refresh, so we have to
 // re-add each time it asks us to).
-static void install_input_menu_item(void)
+COLD_MAIN static void install_input_menu_item(void)
 {
     sInputMenu = pd_->system->addOptionsMenuItem("Input", k_input_opts, 3,
                                                   on_menu_input, NULL);
@@ -492,12 +516,15 @@ static void install_input_menu_item(void)
 
 // Called from poll_input each tick: once both holds have drained, snap the
 // menu UI back to "None" so a fresh selection of Select/Reset re-fires.
-void stellapd_input_menu_idle_if_done(void)
+// Gated on s_input_menu_dirty so this is a single CPU branch (not a
+// syscall) the vast majority of the time -- only when a pulse is in
+// flight or just finishing do we touch the menu API.
+COLD_MAIN void stellapd_input_menu_idle_if_done(void)
 {
-    if (!sInputMenu) return;
+    if (!s_input_menu_dirty || !sInputMenu) return;
     if (sSelectHold == 0 && sResetHold == 0) {
-        int cur = pd_->system->getMenuItemValue(sInputMenu);
-        if (cur != 0) pd_->system->setMenuItemValue(sInputMenu, 0);
+        pd_->system->setMenuItemValue(sInputMenu, 0);
+        s_input_menu_dirty = 0;
     }
 }
 
@@ -538,12 +565,12 @@ static void run_static_ctors(void) {}
 
 // Single-tick entry point so the libcrankemu adapter (ce_update) can drive
 // the same update body as the standalone setUpdateCallback path.
-void stellapd_run_tick(void) { (void)update_cb(NULL); }
+COLD_MAIN void stellapd_run_tick(void) { (void)update_cb(NULL); }
 
 // Common event handling. When `dynamic` is non-zero we skip the
 // standalone-only setup (rom loading, refresh rate, menu items, update
 // callback) — under libcrankemu the frontend owns those.
-int stellapd_event_handler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg, int dynamic)
+COLD_MAIN int stellapd_event_handler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg, int dynamic)
 {
     (void)arg;
 

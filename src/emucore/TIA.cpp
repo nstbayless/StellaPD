@@ -1293,6 +1293,7 @@ void TIA::handleObjectsAndCollisions(Int32 clocksToUpdate, Int32 hpos)
 #undef HANDLE_COLOR_AND_COLLISIONS
 #define HANDLE_COLOR_AND_COLLISIONS  *mfp = myColor[myPriorityEncoder[0][enabled]];
 
+__attribute__((section(".text.stellapd_hot.tia_handleObjectsNoCollisions")))
 void TIA::handleObjectsNoCollisions(Int32 clocksToUpdate, Int32 hpos)
 {
     uInt8* ending = myFramePointer + clocksToUpdate;  // Calculate the ending frame pointer value

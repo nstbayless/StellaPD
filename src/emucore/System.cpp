@@ -35,7 +35,12 @@
 // deserves better than some global variable hack but the speedup is needed 
 // to bring even more games up to 60 FPS. Sometimes the ends justify the means.
 // ---------------------------------------------------------------------------
-Int32  gSystemCycles    = 0;
+// gSystemCycles is incremented on every smol-CPU memory access and read
+// back at the end of each instruction. Anchor it into .bss.stellapd_hot
+// next to the other hot tables so the load through r7 (= &gSystemCycles)
+// inside execute_smol stays cache-resident regardless of BSS growth.
+Int32  gSystemCycles
+    __attribute__((section(".bss.stellapd_hot.gSystemCycles"))) = 0;
 
 uInt32 gTotalSystemCycles = 0;
 

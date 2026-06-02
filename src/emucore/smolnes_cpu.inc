@@ -61,7 +61,11 @@ static uint16_t mf_per_op_table[256] __attribute__((aligned(4)));
 //   bit  24     : 1 if this opcode is rare/illegal -- bail to cpu_step_smolnes
 //   bits 25..31 : reserved (0)
 // Populated by cpu_custom_init from the three smaller tables above.
-static uint32_t opdecode_table[256] __attribute__((aligned(4)));
+// Anchored into the .bss.stellapd_hot region by link_map.ld so the
+// table's D-cache set residue doesn't drift when unrelated BSS grows.
+static uint32_t opdecode_table[256]
+    __attribute__((aligned(4)))
+    __attribute__((section(".bss.stellapd_hot.opdecode_table")));
 #define OPDEC_MF(x)        ((uint16_t)((x) & 0xFFFFu))
 #define OPDEC_OPCAT(x)     ((uint8_t)(((x) >> 16) & 0x7Fu))
 #define OPDEC_SKIP_READ(x) (((x) >> 23) & 1u)

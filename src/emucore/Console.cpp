@@ -9,6 +9,7 @@
 #include "pd_compat.h"
 #include <stdio.h>
 #include <assert.h>
+#include <new>
 
 #include "Cart.hxx"
 #include "Console.hxx"
@@ -24,8 +25,27 @@
 #include "TIA.hxx"
 #include "TIASound.hxx"
 
+// Tried anchoring theTIA / theM6532 into .bss.stellapd_hot too, but it
+// shifted the M6502 register file's D-cache set residue and cost ~0.1 fps
+// instead of gaining. Leave them in the default BSS section; only the
+// items read on every smol-CPU step (M6502 instance + register file +
+// gSystemCycles + opdecode_table) benefit from the dedicated hot region.
 M6532 theM6532;
 TIA   theTIA;
+
+// Pin the M6502Low instance into a fixed, cache-line-aligned slot at the
+// start of BSS. The hot interpreter loop in execute_smol does a handful of
+// loads through the M6502 `this` pointer on every instruction (mySystem,
+// myEnvelope* fields, etc.), and when those fields are heap-allocated the
+// instance's address shifts whenever unrelated allocations move the heap
+// arena -- different D-cache set residues, different evictions, different
+// fps. Anchoring it next to opdecode_table / lumaLUT keeps the residue
+// stable regardless of the heap layout.
+//
+// Console constructs M6502Low exactly once at startup, never destructs.
+// Placement-new into this storage; skip delete.
+alignas(32) static unsigned char g_m6502_storage[256]
+    __attribute__((section(".bss.stellapd_hot.m6502")));
 
 extern uInt16 mySoundFreq;
 
@@ -43,7 +63,11 @@ Console::Console(const uInt8* image, uInt32 size, const char* /*filename*/)
   mySwitches = new Switches(*myEvent);
   mySystem   = new System(MY_ADDR_SHIFT, MY_PAGE_SHIFT);
 
-  M6502* m6502 = new M6502Low(1);
+  // Placement-new into the fixed BSS slot (declared above). sizeof(M6502Low)
+  // must fit; the static_assert inside the .cpp guards that.
+  static_assert(sizeof(M6502Low) <= sizeof(g_m6502_storage),
+                "g_m6502_storage too small for M6502Low");
+  M6502* m6502 = new (g_m6502_storage) M6502Low(1);
   theM6532.setConsole(this);
 
   myCartridge = Cartridge::create(image, size);

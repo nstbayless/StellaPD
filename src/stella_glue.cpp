@@ -72,15 +72,23 @@ static int g_control_mode = 0;
 // stella_set_crank_docked() (main.c does so right before init).
 static int g_crank_docked_at_init = 1;  // start assuming docked = Joystick
 
-extern "C" void stella_set_control_mode(int mode)
+// All of the *_mode / difficulty / tv-type setters are called once at
+// startup (or from a system-menu callback), never per-frame. Park them in
+// .text.stellapd_cold so they don't push warm functions (stella_run_frame,
+// stella_set_input, stella_set_paddle, etc.) into a different I-cache set
+// residue. Without this, the libcrankemu integration cost ~3 fps in
+// standalone mode despite the hot path being byte-identical to baseline.
+#define COLD_GLUE __attribute__((section(".text_cold.glue"), noinline))
+
+extern "C" COLD_GLUE void stella_set_control_mode(int mode)
 {
   if (mode < 0 || mode > 2) mode = 0;
   g_control_mode = mode;
 }
-extern "C" int  stella_get_control_mode(void) { return g_control_mode; }
+extern "C" COLD_GLUE int  stella_get_control_mode(void) { return g_control_mode; }
 
-extern "C" void stella_set_crank_docked(int docked) { g_crank_docked_at_init = docked ? 1 : 0; }
-extern "C" int  stella_resolve_paddle_mode(void)
+extern "C" COLD_GLUE void stella_set_crank_docked(int docked) { g_crank_docked_at_init = docked ? 1 : 0; }
+extern "C" COLD_GLUE int  stella_resolve_paddle_mode(void)
 {
   if (g_control_mode == 1) return 0;  // Joystick
   if (g_control_mode == 2) return 1;  // Paddle
@@ -100,7 +108,7 @@ extern "C" int  stella_get_paddle_mode(void)   { return g_controller_is_paddle; 
 // remembers the toggle state in OS-menu options items and pushes events
 // here whenever the toggle changes; Switches::read() picks them up next
 // time the cart reads SWCHB.
-extern "C" void stella_set_color_mode(int color);
+extern "C" COLD_GLUE void stella_set_color_mode(int color);
 extern "C" void stella_set_left_difficulty(int diff_a);
 extern "C" void stella_set_right_difficulty(int diff_a);
 // (Definitions appear later in this TU, alongside the other event setters.)
@@ -172,7 +180,7 @@ extern "C" void stella_set_cart_name(const char* name)
   sCartName[i] = 0;
 }
 
-extern "C" const char* stella_cart_name(void) { return sCartName; }
+extern "C" COLD_GLUE const char* stella_cart_name(void) { return sCartName; }
 
 // --- DTCM buffer relocation -----------------------------------------------
 // fast_cart_buffer (cart ROM, read every instruction fetch) and myRAM (Atari
@@ -189,7 +197,7 @@ static void* (*s_dtcm_alloc)(size_t) = 0;
 static uInt8 sFastCartStorage[FAST_CART_BYTES] __attribute__((aligned(8)));
 static uInt8 sMyRamStorage[256]                __attribute__((aligned(8)));
 
-extern "C" void stella_set_dtcm_alloc(void* (*fn)(size_t)) { s_dtcm_alloc = fn; }
+extern "C" COLD_GLUE void stella_set_dtcm_alloc(void* (*fn)(size_t)) { s_dtcm_alloc = fn; }
 
 extern "C" void stella_alloc_buffers(void)
 {
@@ -266,7 +274,7 @@ extern "C" void stella_set_input(uInt8 up, uInt8 down, uInt8 left, uInt8 right,
 // Console-switch event setters. Switches::read() consumes the paired events
 // (one drives the bit up, the other down); we set both each call so the
 // bit reliably reflects the user's chosen position.
-extern "C" void stella_set_color_mode(int color)
+extern "C" COLD_GLUE void stella_set_color_mode(int color)
 {
   if (!sConsole) return;
   Event& ev = *sConsole->eventHandler().event();
@@ -274,7 +282,7 @@ extern "C" void stella_set_color_mode(int color)
   ev.set(Event::ConsoleBlackWhite, color ? 0 : 1);
 }
 
-extern "C" void stella_set_left_difficulty(int diff_a)
+extern "C" COLD_GLUE void stella_set_left_difficulty(int diff_a)
 {
   if (!sConsole) return;
   Event& ev = *sConsole->eventHandler().event();
@@ -282,7 +290,7 @@ extern "C" void stella_set_left_difficulty(int diff_a)
   ev.set(Event::ConsoleLeftDifficultyB, diff_a ? 0 : 1);
 }
 
-extern "C" void stella_set_right_difficulty(int diff_a)
+extern "C" COLD_GLUE void stella_set_right_difficulty(int diff_a)
 {
   if (!sConsole) return;
   Event& ev = *sConsole->eventHandler().event();
@@ -292,11 +300,11 @@ extern "C" void stella_set_right_difficulty(int diff_a)
 
 // TV system: 0 = NTSC, 1 = PAL. Takes effect on next stella_init (cart
 // construction reads tv_type_requested into myCartInfo.tv_type).
-extern "C" void stella_set_tv_type(int pal)
+extern "C" COLD_GLUE void stella_set_tv_type(int pal)
 {
   tv_type_requested = pal ? PAL : NTSC;
 }
-extern "C" int  stella_get_tv_type(void) { return tv_type_requested == PAL ? 1 : 0; }
+extern "C" COLD_GLUE int  stella_get_tv_type(void) { return tv_type_requested == PAL ? 1 : 0; }
 
 // Feed an analog paddle position in [0..1023] (e.g. from the crank angle):
 // 0 maps to maximum resistance (one extreme), 1023 to minimum. Also sets the

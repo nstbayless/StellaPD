@@ -32,19 +32,27 @@
 // references in the original sources still satisfy the link.
 class CartridgeAR;
 
-uInt16 gPC                               ;   // Program Counter
-uInt8 A                                  ;   // Accumulator
-uInt8 X                                  ;   // X index register
-uInt8 Y                                  ;   // Y index register
-uInt8 SP                                 ;   // Stack Pointer
+// 6502 register file (PC, A, X, Y, SP, flags) -- read and written on every
+// emulated instruction by execute_smol / cpu_step_custom. Park them in
+// .bss.stellapd_hot, packed into a single 16-byte slab so they share one or
+// two D-cache lines and don't get evicted by unrelated BSS reads. Without
+// this, the hot interpreter spent ~2x more samples on the `ldr` instructions
+// that read these globals (e.g. PC 0x2a8 = `ldr r3,[r7,#0]` where r7 holds
+// the literal-pool address of gSystemCycles, which sits near gPC/A/X/Y).
+#define CPU_REG __attribute__((section(".bss.stellapd_hot.cpu_regs")))
+CPU_REG uInt16 gPC      ;   // Program Counter
+CPU_REG uInt8 A         ;   // Accumulator
+CPU_REG uInt8 X         ;   // X index register
+CPU_REG uInt8 Y         ;   // Y index register
+CPU_REG uInt8 SP        ;   // Stack Pointer
 
-uInt8 N                                  ;   // N flag for processor status register
-uInt8 V                                  ;   // V flag for processor status register
-uInt8 B                                  ;   // B flag for processor status register
-uInt8 D                                  ;   // D flag for processor status register
-uInt8 I                                  ;   // I flag for processor status register
-uInt8 notZ                               ;   // Z flag complement for processor status register
-uInt8 C                                  ;   // C flag for processor status register
+CPU_REG uInt8 N         ;   // N flag for processor status register
+CPU_REG uInt8 V         ;   // V flag for processor status register
+CPU_REG uInt8 B         ;   // B flag for processor status register
+CPU_REG uInt8 D         ;   // D flag for processor status register
+CPU_REG uInt8 I         ;   // I flag for processor status register
+CPU_REG uInt8 notZ      ;   // Z flag complement for processor status register
+CPU_REG uInt8 C         ;   // C flag for processor status register
 uInt32 *pLocalExecutionStatus            ;   // This is what's used to end a frame when the time comes
 
 uInt32 NumberOfDistinctAccesses          ;         // For AR cart use only - track the # of distinct PC accesses

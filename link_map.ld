@@ -38,11 +38,26 @@ SECTIONS
 		. = ALIGN(32);
 		KEEP(*(.text.stellapd_hot.tia_handleObjectsAndCollisions))
 		. = ALIGN(32);
+		KEEP(*(.text.stellapd_hot.tia_handleObjectsNoCollisions))
+		. = ALIGN(32);
+		KEEP(*(.text.stellapd_hot.stella_emit_scanline))
+		. = ALIGN(32);
 		KEEP(*(.text.stellapd_hot.*))
 		. = ALIGN(32);
 
-		*(.text)
-		*(.text.*)
+		/* Default .text -- everything not explicitly cold. Excluding
+		 * ce_iface.o keeps libcrankemu glue code (~7 KB of new functions
+		 * none of which are called on the standalone hot path) from
+		 * displacing warm functions to different I-cache set residues.
+		 * Functions tagged .text_cold.* (note the underscore, so the
+		 * generic .text.* glob doesn't pick them up here) are scooped
+		 * after the default sweep below. */
+		*(EXCLUDE_FILE (*ce_iface.o) .text)
+		*(EXCLUDE_FILE (*ce_iface.o) .text.*)
+
+		/* Explicitly-cold functions placed after warm code. */
+		*(.text_cold.*)
+		*ce_iface.o(.text .text.*)
 
 		KEEP(*(.init))
 		KEEP(*(.fini))
@@ -99,6 +114,24 @@ SECTIONS
 	{
 		. = ALIGN(4);
 		__bss_start__ = .;
+
+		/* Anchor the hottest BSS tables at a fixed 256-byte-aligned slot
+		 * at the very start of BSS so unrelated BSS growth elsewhere can't
+		 * shift them to a different D-cache set residue and regress FPS.
+		 * Symmetric to the .text.stellapd_hot anchor above. */
+		. = ALIGN(0x100);
+		/* M6502Low instance first: its `this`-relative loads dominate the
+		 * inner interpreter loop, and the instance straddles a 32 B line
+		 * boundary, so its address is the most cache-residue-sensitive. */
+		KEEP(*(.bss.stellapd_hot.m6502))
+		. = ALIGN(32);
+		KEEP(*(.bss.stellapd_hot.opdecode_table))
+		. = ALIGN(32);
+		KEEP(*(.bss.stellapd_hot.lumaLUT))
+		. = ALIGN(32);
+		KEEP(*(.bss.stellapd_hot.*))
+		. = ALIGN(32);
+
 		*(.bss*)
 		*(COMMON)
 		*(COM)
