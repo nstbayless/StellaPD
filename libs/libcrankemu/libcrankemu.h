@@ -99,8 +99,11 @@ const char* ce_get_system_slugs(void);
 
 // loading a rom is precondition to all the functions that follow from this point on.
 // but loading a rom does not always entail the rom will be played.
-
+// rom data is owned by frontend, but core may modify the rom if necessary.
 bool ce_load_rom(uint8_t* rom, size_t size, const char* system_slug, const char* rom_basename);
+
+// forget the currently-loaded rom.
+// should also reset all preferences to their default value (even global ones)
 void ce_unload_rom(void);
 
 // -- rom info --
@@ -139,6 +142,7 @@ bool ce_state_load(const uint8_t* buffer, size_t size);  // return false on fail
 // NULL-terminated preference list.
 // For a give ROM, should not change.
 // May be invoked either during during play (i.e. after ce_start_rom) or before.
+// core-owned.
 ce_preference_t** ce_get_preferences(void);
 
 // note: eventHandler will receive normal events.
