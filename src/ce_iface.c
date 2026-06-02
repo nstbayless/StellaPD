@@ -107,10 +107,94 @@ bool ce_load_rom(uint8_t* rom, size_t size, const char* system_slug, const char*
 // same Console for the next ce_load_rom; nothing to free here.
 void ce_unload_rom(void) { }
 
+// --- Optional ITCM relocation ----------------------------------------------
+// The frontend can offer StellaPD an alloc_dtcm callback + an itcm_allowed
+// flag in its config; when both are present we copy the smol interpreter's
+// hot body (m6502_execute_smol_impl, marked .text.itcm.stella.execute_smol
+// in link_map.ld) into the DTCM-allocated buffer and swap the dispatch
+// function pointer to call the relocated copy. DTCM access is single-cycle
+// vs. cached SRAM, so the per-instruction `[r7]` loads we anchored in BSS
+// earlier (gSystemCycles, the smol register file, etc.) become unconditional
+// hits regardless of D-cache contention from other workloads.
+//
+// Safety: only honored at ce_play time, only when the frontend explicitly
+// allows it (frontend_config_t.itcm_allowed) AND provides alloc_dtcm. If
+// either is missing we just keep running from flash.
+
+extern uint8_t __stella_itcm_text_start[];
+extern uint8_t __stella_itcm_text_end[];
+extern void (*g_m6502_execute_smol)(void);   // defined in M6502Smol.cpp
+
+// Read by the standalone update_cb (via stella_get_turbo) to decide whether
+// to emulate two Atari NTSC frames per Playdate tick (turbo == native 60 Hz
+// Atari on a 30 Hz host) or one (turbo off -- frontend has asked us to
+// frame-rate-limit). Default is on; ce_play re-syncs it to the frontend's
+// config each time the ROM is started.
+int stella_turbo = 1;
+
+static int s_itcm_relocated = 0;
+
+static void maybe_relocate_to_itcm(void)
+{
+    if (s_itcm_relocated) return;
+    if (!s_fe) return;
+    if (!s_fe->alloc_dtcm) return;
+    if (!s_fe->config) return;
+    const ce_frontend_config_t* cfg = s_fe->config();
+    if (!cfg || !cfg->itcm_allowed) return;
+
+    size_t size = (size_t)(__stella_itcm_text_end - __stella_itcm_text_start);
+    if (size == 0) return;
+
+    // 32-byte alignment matches the section's alignment in the link script
+    // (cache-line aligned) and keeps PC-relative literal pool offsets
+    // word-aligned in the relocated copy.
+    void* buf = s_fe->alloc_dtcm(size, 32);
+    if (!buf) {
+        if (s_fe->set_error) s_fe->set_error("ITCM: alloc_dtcm(%u) failed", (unsigned)size);
+        return;
+    }
+    memcpy(buf, __stella_itcm_text_start, size);
+
+    // Compute relocated address of m6502_execute_smol_impl. Thumb function
+    // pointers have the LSB set ("thumb bit"); preserve it through the
+    // arithmetic. The relocation offset is the same for every byte in the
+    // span -- if we wanted to relocate more than one function in the future
+    // each would get the same (buf - __stella_itcm_text_start) adjustment.
+    uintptr_t orig = (uintptr_t)g_m6502_execute_smol;
+    uintptr_t offset = (uintptr_t)buf - (uintptr_t)__stella_itcm_text_start;
+    g_m6502_execute_smol = (void (*)(void))(orig + offset);
+
+    // Make sure the I-cache sees the copy as code, not stale data lines.
+    // pd_ is set by stellapd_event_handler at kEventInit.
+    if (pd_ && pd_->system && pd_->system->clearICache)
+        pd_->system->clearICache();
+
+    s_itcm_relocated = 1;
+    if (pd_ && pd_->system && pd_->system->logToConsole)
+        pd_->system->logToConsole(
+            "stella ITCM: relocated %u bytes -> %p (orig %p, offset 0x%lx)",
+            (unsigned)size, buf, (void*)orig, (unsigned long)offset);
+}
+
 // play/stop are gating events for emulation. For StellaPD the Console
 // is always ready once load_rom has run, and ticks come in from
-// ce_update, so the play/stop pair is currently a no-op.
-bool ce_play(void) { return true; }
+// ce_update, so the play/stop pair is mostly a no-op -- with the new
+// frontend-config protocol, ce_play is also our hook for optional ITCM
+// relocation (idempotent: only runs once across multiple play cycles).
+bool ce_play(void)
+{
+    // Latch the frontend's turbo flag for the standalone tick loop. Default
+    // (no frontend, or no config()) is on -- StellaPD's natural cadence.
+    if (s_fe && s_fe->config) {
+        const ce_frontend_config_t* cfg = s_fe->config();
+        if (cfg) stella_turbo = cfg->turbo ? 1 : 0;
+    } else {
+        stella_turbo = 1;
+    }
+    maybe_relocate_to_itcm();
+    return true;
+}
 void ce_stop(void) { }
 
 // Returns the number of *emulated* frames advanced per host tick. Stella

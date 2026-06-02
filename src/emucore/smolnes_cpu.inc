@@ -229,8 +229,10 @@ static void cpu_custom_init(void) {
     }
 }
 
-// Helper: set N/Z from a value (matches smolnes's set_nz).
-static inline void cpu_set_nz(uint8_t v) {
+// Helper: set N/Z from a value (matches smolnes's set_nz). Force-inlined so
+// the ITCM-relocated execute_smol body contains no external direct BL to
+// this helper (DTCM is far out of BL range from flash on STM32H7).
+static inline __attribute__((always_inline)) void cpu_set_nz(uint8_t v) {
     $N = (v >> 7) & 1;
     $Z = (v == 0);
 }

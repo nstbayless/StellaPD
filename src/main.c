@@ -397,11 +397,22 @@ static int update_cb(void* userdata)
     render_begin();
 #endif
 #if TICK_STAGE >= 1
-    s_emit = 0; stella_run_frame();
+    // Two Atari frames per Playdate tick is StellaPD's "turbo" mode --
+    // gives the user 60 Hz Atari on the 30 Hz host. When the libcrankemu
+    // frontend sets turbo=false, run one frame instead so the emulator
+    // matches the host's update rate (game runs at half-speed). Standalone
+    // mode never touches stella_turbo so it stays at the default 1.
+    extern int stella_turbo;
 #if TICK_STAGE >= 2
-    s_emit = 1; stella_run_frame();
+    if (stella_turbo) {
+        s_emit = 0; stella_run_frame();
+        s_emit = 1; stella_run_frame();
+    } else {
+        s_emit = 1; stella_run_frame();
+    }
 #else
-    s_emit = 0; stella_run_frame();   // both frames non-emit if no display calls
+    s_emit = 0; stella_run_frame();
+    if (stella_turbo) { s_emit = 0; stella_run_frame(); }
 #endif
 #endif
 #if TICK_STAGE >= 2

@@ -186,8 +186,23 @@ static const uint8_t smol_base_cyc[256] = {
 // --- entry/exit state sync ---------------------------------------------------
 static int s_inited = 0;
 
-__attribute__((section(".text.stellapd_hot.execute_smol")))
-void M6502Low::execute_smol(void)
+// The body of the interpreter lives as a free function so we can relocate
+// it into DTCM ("ITCM" in libcrankemu parlance) at ce_play time. The
+// section name is plumbed through link_map.ld -- both
+// .text.stellapd_hot.execute_smol (default-keeps the function in the hot
+// region) and .text.itcm.stella.execute_smol (the relocation marker pair
+// the linker emits __stella_itcm_text_{start,end} around). The latter
+// section name takes precedence so the function lands inside the marker
+// pair; the hot anchoring still helps when ITCM is not in use (e.g. when
+// the frontend doesn't provide alloc_dtcm).
+//
+// All four direct BL call sites that used to live inside this body (PS()
+// pack, PS(uint8) unpack, cpu_set_nz x2) are inlined / always_inlined --
+// after relocation, BL targets in flash are out of range from DTCM. The
+// remaining 33 calls are register-indirect (blx r3) through literal-pool
+// absolute addresses, which DO survive relocation.
+extern "C" __attribute__((section(".text.itcm.stella.execute_smol")))
+void m6502_execute_smol_impl(void)
 {
     if (!s_inited) { cpu_custom_init(); s_inited = 1; }
     if (!smol_bcd_inited) smol_bcd_init();
@@ -196,7 +211,20 @@ void M6502Low::execute_smol(void)
     s_A = A; s_X = X; s_Y = Y; s_S = SP;
     s_PCL = (uint8_t)(gPC & 0xFF);
     s_PCH = (uint8_t)((gPC >> 8) & 0xFF);
-    s_Pun.byte = PS();              // pack N/V/B/D/I/Z/C from Stella's flag bytes
+    // Inlined PS() pack: out-of-line PS() would compile to a direct BL,
+    // which is unreachable after relocating this function to DTCM (BL
+    // range ±16 MB vs DTCM-vs-loaded-code distance >> 16 MB on STM32H7).
+    {
+        uInt8 ps = 0x20;
+        if (N & 0x80) ps |= 0x80;
+        if (V)        ps |= 0x40;
+        if (B)        ps |= 0x10;
+        if (D)        ps |= 0x08;
+        if (I)        ps |= 0x04;
+        if (!notZ)    ps |= 0x02;
+        if (C)        ps |= 0x01;
+        s_Pun.byte = ps;
+    }
 
     int executionStatus = 0;
     stack_executionStatus = &executionStatus;
@@ -229,8 +257,27 @@ void M6502Low::execute_smol(void)
     // Stella interpreter (the 6507 masks at memory-access time, not in PC).
     A = s_A; X = s_X; Y = s_Y; SP = s_S;
     gPC = (uInt16)(((uInt16)s_PCH << 8) | s_PCL);
-    PS(s_Pun.byte);                 // unpack flags back into Stella's flag bytes
+    // Inlined PS(uint8) unpack (see note on the pack site above).
+    {
+        uInt8 ps = s_Pun.byte;
+        N = ps & 0x80;
+        V = ps & 0x40;
+        B = ps & 0x10;
+        D = ps & 0x08;
+        I = ps & 0x04;
+        notZ = !(ps & 0x02);
+        C = ps & 0x01;
+    }
 }
+
+// Function pointer used by M6502Low::execute_smol below. ce_play swaps it
+// to the relocated DTCM copy when the frontend allows ITCM, otherwise it
+// stays pointing at the flash-resident original.
+extern "C" {
+void (*g_m6502_execute_smol)(void) = m6502_execute_smol_impl;
+}
+
+void M6502Low::execute_smol(void) { g_m6502_execute_smol(); }
 
 // Instruction-level predictor for the comparison harness. Loads the supplied
 // pre-state, runs exactly one instruction WITHOUT mutating the machine (predict

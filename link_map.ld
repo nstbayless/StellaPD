@@ -28,6 +28,20 @@ SECTIONS
 		   gives stable anchoring with 256 distinct PC residues. */
 		. = ALIGN(0x100);
 
+		/* ITCM relocation region FIRST inside the hot block. Putting it
+		 * at the head keeps execute_smol's address (and its I-cache set
+		 * residue) stable at the same low offset that .text.stellapd_hot
+		 * historically used -- otherwise relocating its section name to
+		 * .text.itcm.stella.* shifted the function several KB later and
+		 * cost ~1 fps from cache-set drift. See ce_iface.c
+		 * maybe_relocate_to_itcm() for the runtime copy. */
+		. = ALIGN(32);
+		__stella_itcm_text_start = .;
+		KEEP(*(.text.itcm.stella.*))
+		. = ALIGN(32);
+		__stella_itcm_text_end = .;
+		. = ALIGN(32);
+
 		KEEP(*(.text.stellapd_hot.cpu_step_custom))
 		. = ALIGN(32);
 		KEEP(*(.text.stellapd_hot.execute_smol))
