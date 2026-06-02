@@ -237,26 +237,47 @@ static int stella_audio_cb(void* /*ctx*/, int16_t* left, int16_t* right, int len
     // and subtract a small DC bias to keep the speaker happy. The shift
     // gives a bit of headroom; the TIA's two channels summed peak around
     // 0x3000 in practice, so << 1 stays well below int16 clipping.
+    // Linear-interpolating resampler from the producer's 15.7 kHz rate to
+    // the Playdate's fixed 44.1 kHz output. Ratio 44100/15700 ~= 2.81, so
+    // each input sample contributes to ~2.8 output samples. Phase is
+    // tracked in s_phase across calls; each step we add 15700 to it and
+    // consume an input sample (advance out_idx) whenever it reaches 44100.
+    // Sample-and-hold (no interp) would also work for TIA noise quality
+    // but adds high-frequency aliasing; linear interp costs one extra
+    // multiply per output sample and sounds cleaner.
+    static uint32_t s_phase = 0;
+    static int16_t  s_prev  = 0;
+    static int16_t  s_cur   = 0;
+    const uint32_t  step = 15700;   // must match Console.cpp's STELLA_AUDIO_RATE
+    const uint32_t  pdrate = 44100;
     const uInt16 buf_mask = SOUND_SIZE - 1;
     uInt16 out_idx = tia_out_idx;
     const uInt16 in_idx = tia_buf_idx;
-    int i = 0;
-    while (i < len)
+    for (int i = 0; i < len; ++i)
     {
-        if (out_idx == in_idx) {
-            // Underrun: hold the last sample we managed to emit.
-            int16_t s = (i > 0) ? left[i-1] : 0;
-            for (; i < len; ++i) left[i] = s;
-            break;
+        s_phase += step;
+        while (s_phase >= pdrate)
+        {
+            s_phase -= pdrate;
+            s_prev = s_cur;
+            if (out_idx != in_idx) {
+                uInt16 raw = tia_buf[out_idx];
+                out_idx = (out_idx + 1) & buf_mask;
+                wave_direct_samples++;
+                // raw is u16 in [0..~3840]; centre near 0 and amplify into
+                // the int16 range. Subtracting 0x800 lifts most of the
+                // implicit DC offset off; the speaker AC-couples the rest.
+                int32_t s = ((int32_t)raw - 0x800) << 3;
+                if (s >  32767) s =  32767;
+                if (s < -32768) s = -32768;
+                s_cur = (int16_t)s;
+            }
+            // else: underrun -- hold previous (s_prev = s_cur already)
         }
-        uInt16 raw = tia_buf[out_idx];
-        out_idx = (out_idx + 1) & buf_mask;
-        // raw is u16 in [0..~3840] (sum of sampleExtender lookups for the
-        // two TIA channels). Amplify into the int16 range; the Playdate
-        // speakers are AC-coupled so the DC bias gets stripped downstream.
-        int32_t s = (int32_t)raw << 3;
-        if (s >  32767) s =  32767;
-        left[i++] = (int16_t)s;
+        // Linear interpolate between s_prev and s_cur using phase fraction.
+        // out = prev + (cur - prev) * (phase / pdrate)
+        int32_t mix = (int32_t)s_prev + (((int32_t)(s_cur - s_prev) * (int32_t)s_phase) / (int32_t)pdrate);
+        left[i] = (int16_t)mix;
     }
     tia_out_idx = out_idx;
     return 1;

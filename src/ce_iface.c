@@ -442,14 +442,21 @@ PDLL_EXPORT(
 #ifdef _WINDLL
 __declspec(dllexport)
 #endif
+// Sticky: set on the kEventInit PDLL handshake (when the loader passes
+// PDLL_DYNAMIC_INIT_ARG); stays set for the rest of the process so later
+// events (kEventPause, kEventResume, kEventTerminate, ...) know we're
+// running as a libcrankemu core rather than a standalone .pdx. Without
+// this, only the init dispatch was tagged dynamic, so the kEventPause
+// install_input_menu_item() refresh never fired.
+static int s_is_dynamic = 0;
+
 int eventHandler(PlaydateAPI* pd, PDSystemEvent event, uint32_t arg)
 {
-    int dynamic = 0;
     {
         PDLL_EVENT(pd, event, arg);
-        if (pdll) dynamic = 1;
+        if (pdll) s_is_dynamic = 1;
     }
-    return stellapd_event_handler(pd, event, arg, dynamic);
+    return stellapd_event_handler(pd, event, arg, s_is_dynamic);
 }
 
 #ifdef __cplusplus

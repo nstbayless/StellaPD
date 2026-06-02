@@ -49,9 +49,17 @@ alignas(32) static unsigned char g_m6502_storage[256]
 
 extern uInt16 mySoundFreq;
 
-// Playdate audio runs at a fixed 44.1 kHz; produce samples at the same
-// rate so the audio source callback can copy 1:1 with no resampling.
-#define STELLA_AUDIO_RATE 44100
+// Internal audio sample rate. Must be <= sample_freq (31.4 kHz, the TIA's
+// own audio clock) or Tia_process loops 16M times per call: with
+// playback_freq > sample_freq, Samp_n_max = (sample_freq<<8)/playback_freq
+// drops below 256, after which Samp_n_cnt -= 256 wraps a uInt32 into the
+// negative range and the high-byte `if (cnt & 0xFF00) continue;` only
+// breaks when the counter wraps all the way back around. We pick 15.7 kHz
+// (= 1/2 of the TIA clock) -- this also matches the DS port's natural
+// producer rate of every-76-cycles (1.19 MHz / 76 ~= 15700 calls/sec),
+// so the existing TIA::poke threshold needs no change. The callback in
+// stella_glue.cpp resamples 15.7 -> 44.1 kHz with simple phase tracking.
+#define STELLA_AUDIO_RATE 15700
 
 Console::Console(const uInt8* image, uInt32 size, const char* /*filename*/)
 {
