@@ -1,4 +1,5 @@
 {
+    "$schema": "https://raw.githubusercontent.com/nstbayless/libcrankemu-cores/main/core.schema.json",
     "systems": {"a26": "Atari 2600"},
     "name": "StellaPD",
     "version": "v1.0.0",
@@ -7,14 +8,14 @@
         "pdex.bin":"cores/StellaPD.pdll",
         "LICENSE":"cores/LICENSE_StellaPD"
     },
-    "ce-version-max": 1,
+    "ce-version": 1,
     "ce-version-min": 1,
-    "description": "Very WIP, don't expect great performance, esp. on Rev A.",
+    "description": "Very WIP, don't expect great performance, esp. on Rev A. Based on StellaDS by wavemotion-dave, in turn based on Stella.",
     "timestamp": "2026-06-05 10:41:10",
     "size-download": 93674,
     "href": "https://github.com/nstbayless/StellaPD/releases/download/v0.1.0/StellaPD.pdx.zip",
     "license": "GPLv2",
     "license-href": "https://raw.githubusercontent.com/nstbayless/StellaPD/refs/heads/main/LICENSE",
     "maintainer": "Sodium",
-    "genAI": "yes"
+    "genAI": "yes (claude-opus-4.8)"
 }
